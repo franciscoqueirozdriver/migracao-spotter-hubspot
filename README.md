@@ -1,0 +1,1 @@
+# migracao-spotter-hubspot
