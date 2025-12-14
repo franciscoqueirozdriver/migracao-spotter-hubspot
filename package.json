@@ -1,0 +1,12 @@
+{
+  "name": "migracao-spotter-hubspot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "export:products": "node --loader ts-node/esm scripts/export-spotter-products.ts"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
