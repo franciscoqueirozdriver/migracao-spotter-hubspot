@@ -31,7 +31,7 @@ async function fetchAllProducts(token: string, baseUrl: string): Promise<Spotter
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch data: ${response.status} ${response.statusText}`);
+      throw new Error(`A API do Spotter retornou um erro: ${response.status} ${response.statusText}. Por favor, verifique o status do serviço do Spotter.`);
     }
 
     const data: SpotterResponse = await response.json();
