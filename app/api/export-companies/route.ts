@@ -4,10 +4,10 @@ import { exportCompaniesToCsv } from '../../../lib/companies';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const token = process.env.SPOTTER_TOKEN;
+  const token = process.env.SPOTTER_TOKEN_EXACT;
 
   if (!token) {
-    return new Response(JSON.stringify({ error: 'SPOTTER_TOKEN environment variable is not set.' }), {
+    return new Response(JSON.stringify({ error: 'SPOTTER_TOKEN_EXACT environment variable is not set.' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
