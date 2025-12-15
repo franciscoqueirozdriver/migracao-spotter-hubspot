@@ -42,6 +42,12 @@ async function fetchAllProducts(token: string, baseUrl: string, log: LogCallback
     }
 
     const data: SpotterResponse = await response.json();
+
+    if (data.value.length === 0) {
+      log('Recebida uma página vazia. Finalizando a busca.');
+      break;
+    }
+
     allProducts = allProducts.concat(data.value);
     log(`Recebidos ${data.value.length} produtos.`);
     nextUrl = data['@odata.nextLink'];
