@@ -1,6 +1,7 @@
 // lib/companies.ts
 import fs from 'fs';
 import path from 'path';
+import { sanitizeCsvValue, buildCsv } from './csv';
 
 // Type definitions for Spotter API response
 export interface SpotterOrganization {
@@ -26,22 +27,6 @@ export type ODataResponse<T> = {
   ['@odata.nextLink']?: string;
 };
 
-// Type definition for HubSpot company CSV data
-export interface HubSpotCompany {
-  'Nome da empresa': string;
-  'Nome de domínio da empresa': string;
-  'CNPJ': string;
-  'Endereço': string;
-  'Número': string;
-  'Complemento': string;
-  'Bairro': string;
-  'Código postal': string;
-  'Cidade': string;
-  'Estado/Região': string;
-  'País/Região': string;
-  'spotter_organization_id': string;
-}
-
 // Type definition for the logging callback
 type LogCallback = (message: string) => void;
 
@@ -58,6 +43,22 @@ interface CompanyExportLog {
   warningSamples: { id: string; name: string; reason: string }[];
 }
 
+// --- HubSpot CSV Configuration ---
+const COMPANY_HEADERS = [
+  'Nome da empresa',
+  'Nome de domínio da empresa',
+  'CNPJ',
+  'Endereço',
+  'Número',
+  'Complemento',
+  'Bairro',
+  'Código postal',
+  'Cidade',
+  'Estado/Região',
+  'País/Região',
+  'spotter_organization_id',
+];
+
 // --- Normalization Functions ---
 
 function normalizeCnpj(value?: string | null): string {
@@ -68,8 +69,12 @@ function normalizeCnpj(value?: string | null): string {
 function extractDomain(url?: string | null): string {
   if (!url) return '';
   try {
-    const domain = new URL(url).hostname;
-    return domain.replace(/^www\./, '');
+    let domain = url;
+    if (!domain.startsWith('http')) {
+      domain = `http://${domain}`;
+    }
+    const hostname = new URL(domain).hostname;
+    return hostname.replace(/^www\./, '');
   } catch (e) {
     return '';
   }
@@ -114,27 +119,6 @@ async function fetchAllSpotterOrganizations(
   return allOrgs;
 }
 
-// --- CSV Generation ---
-
-function escapeCsvField(field: string | number): string {
-  const str = String(field);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-}
-
-function generateCsvContent(companies: HubSpotCompany[]): string {
-  if (companies.length === 0) {
-    return '';
-  }
-  const headers = Object.keys(companies[0]);
-  const csvRows = companies.map(company =>
-    headers.map(header => escapeCsvField(company[header as keyof HubSpotCompany])).join(',')
-  );
-  return [headers.join(','), ...csvRows].join('\n');
-}
-
 // --- Main Export Logic ---
 
 export async function exportCompaniesToCsv(
@@ -146,9 +130,9 @@ export async function exportCompaniesToCsv(
   const allOrgs = await fetchAllSpotterOrganizations(token, log);
   log(`Total de ${allOrgs.length} organizações recebidas do Spotter.`);
 
-  const hubspotCompanies: HubSpotCompany[] = [];
+  const csvRows: string[][] = [];
   const invalidSamples: { id: string; name: string; reason: string }[] = [];
-  const warningSamples: { id:string; name: string; reason: string }[] = [];
+  const warningSamples: { id: string; name: string; reason: string }[] = [];
 
   let skippedCount = 0;
   let warningCount = 0;
@@ -171,37 +155,37 @@ export async function exportCompaniesToCsv(
       }
     }
 
-    const fullAddress = [org.street, org.number].filter(Boolean).join(', ');
+    const normalizedCnpj = normalizeCnpj(org.cpfCnpj);
 
-    const hubspotCompany: HubSpotCompany = {
-      'Nome da empresa': org.name,
-      'Nome de domínio da empresa': extractDomain(org.website),
-      'CNPJ': normalizeCnpj(org.cpfCnpj),
-      'Endereço': fullAddress,
-      'Número': org.number || '',
-      'Complemento': org.complement || '',
-      'Bairro': org.neighborhood || '',
-      'Código postal': org.zipCode || '',
-      'Cidade': org.city || '',
-      'Estado/Região': org.state || '',
-      'País/Região': org.country || '',
-      'spotter_organization_id': org.id,
-    };
-    hubspotCompanies.push(hubspotCompany);
+    const row = [
+      sanitizeCsvValue(org.name),
+      sanitizeCsvValue(extractDomain(org.website)),
+      sanitizeCsvValue(normalizedCnpj),
+      sanitizeCsvValue(org.street),
+      sanitizeCsvValue(org.number),
+      sanitizeCsvValue(org.complement),
+      sanitizeCsvValue(org.neighborhood),
+      sanitizeCsvValue(org.zipCode),
+      sanitizeCsvValue(org.city),
+      sanitizeCsvValue(org.state),
+      sanitizeCsvValue(org.country),
+      sanitizeCsvValue(org.id),
+    ];
+    csvRows.push(row);
   }
 
-  log(`Processamento concluído. ${hubspotCompanies.length} empresas serão exportadas.`);
+  log(`Processamento concluído. ${csvRows.length} empresas serão exportadas.`);
   log(`${skippedCount} empresas puladas por dados inválidos (sem nome).`);
   log(`${warningCount} empresas marcadas com aviso (sem website e sem CNPJ).`);
 
-  const csvContent = generateCsvContent(hubspotCompanies);
+  const csvContent = buildCsv(COMPANY_HEADERS, csvRows);
   log('Conteúdo CSV gerado.');
 
   const logData: CompanyExportLog = {
     timestamp: new Date().toISOString(),
     stats: {
       totalReceived: allOrgs.length,
-      totalExported: hubspotCompanies.length,
+      totalExported: csvRows.length,
       totalSkippedInvalid: skippedCount,
       totalWithWarning: warningCount,
     },
