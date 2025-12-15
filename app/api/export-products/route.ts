@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { exportProductsToCsv } from '../../../lib/spotter';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const token = process.env.SPOTTER_TOKEN_EXACT;
   const baseUrl = process.env.SPOTTER_BASE_URL || 'https://api.exactspotter.com';
