@@ -7,3 +7,6 @@
 
 # Local environment
 .env.local
+
+# Log files
+*.log

@@ -1,6 +1,3 @@
-import { promises as fs } from 'fs';
-import path from 'path';
-
 // Type definitions for Spotter API response
 interface SpotterProduct {
   id: number;
@@ -21,43 +18,15 @@ interface HubSpotProduct {
   'ID do Produto no Spotter': number;
 }
 
-// Environment variables
-const SPOTTER_TOKEN = process.env.SPOTTER_TOKEN_EXACT;
-const SPOTTER_BASE_URL = process.env.SPOTTER_BASE_URL || 'https://api.exactspotter.com';
-const API_ENDPOINT = '/v3/products';
-
-// Main function
-async function main() {
-  if (!SPOTTER_TOKEN) {
-    console.error('Error: SPOTTER_TOKEN_EXACT environment variable is not set.');
-    process.exit(1);
-  }
-
-  try {
-    const allProducts = await fetchAllProducts();
-    const uniqueProducts = removeDuplicateProducts(allProducts);
-    uniqueProducts.sort((a, b) => a.description.localeCompare(b.description));
-
-    const hubspotProducts = transformToHubSpotFormat(uniqueProducts);
-    await writeCsv(hubspotProducts);
-
-    console.log('Successfully exported products to products_hubspot.csv');
-  } catch (error) {
-    console.error('An error occurred during the export process:', error);
-    process.exit(1);
-  }
-}
-
 // Fetch all products from Spotter API, handling pagination
-async function fetchAllProducts(): Promise<SpotterProduct[]> {
+async function fetchAllProducts(token: string, baseUrl: string): Promise<SpotterProduct[]> {
   let allProducts: SpotterProduct[] = [];
-  let nextUrl: string | undefined = `${SPOTTER_BASE_URL}${API_ENDPOINT}`;
+  let nextUrl: string | undefined = `${baseUrl}/v3/products`;
 
   while (nextUrl) {
-    console.log(`Fetching from: ${nextUrl}`);
     const response = await fetch(nextUrl, {
       headers: {
-        'token_exact': SPOTTER_TOKEN!,
+        'token_exact': token,
       },
     });
 
@@ -103,11 +72,10 @@ function escapeCsvField(field: string | number): string {
   return str;
 }
 
-// Write HubSpot products to CSV file
-async function writeCsv(products: HubSpotProduct[]) {
+// Generate CSV content as a string
+function generateCsvContent(products: HubSpotProduct[]): string {
   if (products.length === 0) {
-    console.log('No products to write to CSV.');
-    return;
+    return '';
   }
 
   const headers = Object.keys(products[0]);
@@ -115,11 +83,13 @@ async function writeCsv(products: HubSpotProduct[]) {
     headers.map(header => escapeCsvField(product[header as keyof HubSpotProduct])).join(',')
   );
 
-  const csvContent = [headers.join(','), ...csvRows].join('\n');
-
-  const filePath = path.join(process.cwd(), 'products_hubspot.csv');
-  await fs.writeFile(filePath, csvContent, 'utf-8');
+  return [headers.join(','), ...csvRows].join('\n');
 }
 
-// Execute the script
-main();
+export async function exportProductsToCsv(token: string, baseUrl: string): Promise<string> {
+  const allProducts = await fetchAllProducts(token, baseUrl);
+  const uniqueProducts = removeDuplicateProducts(allProducts);
+  uniqueProducts.sort((a, b) => a.description.localeCompare(b.description));
+  const hubspotProducts = transformToHubSpotFormat(uniqueProducts);
+  return generateCsvContent(hubspotProducts);
+}
