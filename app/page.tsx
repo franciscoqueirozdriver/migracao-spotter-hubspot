@@ -1,48 +1,65 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const logContainerRef = useRef<HTMLPreElement>(null);
 
-  const handleExport = async () => {
+  const handleExport = () => {
     setIsLoading(true);
     setError(null);
+    setLogs([]);
 
-    try {
-      const response = await fetch('/api/export-products');
+    const eventSource = new EventSource('/api/export-products');
 
-      if (!response.ok) {
-        // Handle different error response types
-        const contentType = response.headers.get('content-type');
-        let errorMessage = `Falha ao exportar produtos (status: ${response.status}).`;
+    eventSource.onopen = () => {
+      console.log('Conexão de streaming aberta.');
+    };
 
-        if (contentType && contentType.includes('application/json')) {
-          const errorData = await response.json();
-          errorMessage = errorData.details || errorData.error || errorMessage;
-        } else {
-          // If the response is not JSON, it might be a gateway timeout (HTML/text)
-          errorMessage = `O servidor demorou muito para responder. Tente novamente mais tarde. (Erro ${response.status})`;
-        }
-        throw new Error(errorMessage);
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.type === 'log') {
+        setLogs((prevLogs) => [...prevLogs, data.message]);
+      } else if (data.type === 'done') {
+        setLogs((prevLogs) => [...prevLogs, 'Download iniciado...']);
+        downloadCsv(data.csvContent);
+        setIsLoading(false);
+        eventSource.close();
+      } else if (data.type === 'error') {
+        setError(data.message);
+        setIsLoading(false);
+        eventSource.close();
       }
+    };
 
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'products_hubspot.csv';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
-    } finally {
+    eventSource.onerror = () => {
+      setError('Falha na conexão de streaming com o servidor.');
       setIsLoading(false);
-    }
+      eventSource.close();
+    };
   };
+
+  const downloadCsv = (csvContent: string) => {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'products_hubspot.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem' }}>
@@ -66,6 +83,16 @@ export default function HomePage() {
       >
         {isLoading ? 'Exportando...' : 'Exportar Produtos para CSV'}
       </button>
+
+      {logs.length > 0 && (
+        <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#f9f9f9' }}>
+          <h2>Logs da Execução</h2>
+          <pre ref={logContainerRef} style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '300px', overflowY: 'auto', margin: 0, fontFamily: 'monospace' }}>
+            {logs.join('\n')}
+          </pre>
+        </div>
+      )}
+
       {error && <p style={{ color: 'red', marginTop: '1rem' }}>Erro: {error}</p>}
     </div>
   );

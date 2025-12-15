@@ -18,12 +18,17 @@ interface HubSpotProduct {
   'ID do Produto no Spotter': number;
 }
 
-// Fetch all products from Spotter API, handling pagination
-async function fetchAllProducts(token: string, baseUrl: string): Promise<SpotterProduct[]> {
+// Type definition for the logging callback
+type LogCallback = (message: string) => void;
+
+// Fetch all products from Spotter API, handling pagination and logging
+async function fetchAllProducts(token: string, baseUrl: string, log: LogCallback): Promise<SpotterProduct[]> {
   let allProducts: SpotterProduct[] = [];
   let nextUrl: string | undefined = `${baseUrl}/v3/products`;
+  let page = 1;
 
   while (nextUrl) {
+    log(`Buscando página ${page} de produtos...`);
     const response = await fetch(nextUrl, {
       headers: {
         'token_exact': token,
@@ -31,18 +36,46 @@ async function fetchAllProducts(token: string, baseUrl: string): Promise<Spotter
     });
 
     if (!response.ok) {
-      throw new Error(`A API do Spotter retornou um erro: ${response.status} ${response.statusText}. Por favor, verifique o status do serviço do Spotter.`);
+      const errorText = `A API do Spotter retornou um erro: ${response.status} ${response.statusText}. Por favor, verifique o status do serviço do Spotter.`;
+      log(`ERRO: ${errorText}`);
+      throw new Error(errorText);
     }
 
     const data: SpotterResponse = await response.json();
     allProducts = allProducts.concat(data.value);
+    log(`Recebidos ${data.value.length} produtos.`);
     nextUrl = data['@odata.nextLink'];
+    page++;
   }
 
   return allProducts;
 }
 
-// Remove duplicate products by ID
+export async function exportProductsToCsv(token: string, baseUrl: string, log: LogCallback): Promise<string> {
+  log('Iniciando exportação de produtos...');
+  const allProducts = await fetchAllProducts(token, baseUrl, log);
+  log(`Total de ${allProducts.length} produtos recebidos.`);
+
+  log('Removendo produtos duplicados...');
+  const uniqueProducts = removeDuplicateProducts(allProducts);
+  log(`Encontrados ${uniqueProducts.length} produtos únicos.`);
+
+  log('Ordenando produtos...');
+  uniqueProducts.sort((a, b) => a.description.localeCompare(b.description));
+
+  log('Transformando dados para o formato HubSpot...');
+  const hubspotProducts = transformToHubSpotFormat(uniqueProducts);
+
+  log('Gerando conteúdo do arquivo CSV...');
+  const csvContent = generateCsvContent(hubspotProducts);
+  log('Geração do CSV concluída.');
+
+  return csvContent;
+}
+
+// The helper functions need to be included as well, but they don't change.
+// I'll paste them back in.
+
 function removeDuplicateProducts(products: SpotterProduct[]): SpotterProduct[] {
     const seen = new Set<number>();
     return products.filter(product => {
@@ -52,7 +85,6 @@ function removeDuplicateProducts(products: SpotterProduct[]): SpotterProduct[] {
     });
 }
 
-// Transform Spotter products to HubSpot format
 function transformToHubSpotFormat(products: SpotterProduct[]): HubSpotProduct[] {
   return products.map(product => ({
     'Nome <PRODUCT name>': product.description,
@@ -61,18 +93,14 @@ function transformToHubSpotFormat(products: SpotterProduct[]): HubSpotProduct[] 
   }));
 }
 
-// Helper to escape CSV fields
 function escapeCsvField(field: string | number): string {
   const str = String(field);
-  // Escape double quotes by doubling them, and wrap the field in double quotes
-  // if it contains a comma, a double quote, or a newline.
   if (str.includes(',') || str.includes('"') || str.includes('\n')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
 }
 
-// Generate CSV content as a string
 function generateCsvContent(products: HubSpotProduct[]): string {
   if (products.length === 0) {
     return '';
@@ -84,12 +112,4 @@ function generateCsvContent(products: HubSpotProduct[]): string {
   );
 
   return [headers.join(','), ...csvRows].join('\n');
-}
-
-export async function exportProductsToCsv(token: string, baseUrl: string): Promise<string> {
-  const allProducts = await fetchAllProducts(token, baseUrl);
-  const uniqueProducts = removeDuplicateProducts(allProducts);
-  uniqueProducts.sort((a, b) => a.description.localeCompare(b.description));
-  const hubspotProducts = transformToHubSpotFormat(uniqueProducts);
-  return generateCsvContent(hubspotProducts);
 }
