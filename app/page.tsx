@@ -14,8 +14,18 @@ export default function HomePage() {
       const response = await fetch('/api/export-products');
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.details || 'Falha ao exportar produtos.');
+        // Handle different error response types
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `Falha ao exportar produtos (status: ${response.status}).`;
+
+        if (contentType && contentType.includes('application/json')) {
+          const errorData = await response.json();
+          errorMessage = errorData.details || errorData.error || errorMessage;
+        } else {
+          // If the response is not JSON, it might be a gateway timeout (HTML/text)
+          errorMessage = `O servidor demorou muito para responder. Tente novamente mais tarde. (Erro ${response.status})`;
+        }
+        throw new Error(errorMessage);
       }
 
       const blob = await response.blob();
