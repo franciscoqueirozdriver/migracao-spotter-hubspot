@@ -33,7 +33,7 @@ export interface HubSpotDealAndLineItemRow {
   'Pipeline': string;
   'Deal Stage': string;
   'Line Item Name': string;
-  'Unit Price': string; // Using string to handle comma formatting for HubSpot
+  'Unit Price': string;
   'Quantity': number;
   'spotter_lead_id': number;
   'spotter_sale_id': number; // Maps to Deal
@@ -42,7 +42,6 @@ export interface HubSpotDealAndLineItemRow {
   'spotter_sale_date': string;
   'origem_comercial_real': string; // Empty as per requirement
   'spotter_product_id': number; // Maps to Line Item
-  'spotter_line_item_sale_id': number; // Custom property to link line item back to the sale
   'spotter_full_value': number;
   'spotter_final_value': number;
   'spotter_discount_amount': number;
@@ -55,6 +54,7 @@ export type LogCallback = (message: string) => void;
 type LogObject = {
   totalLeadsSold: number;
   totalLineItems: number;
+  invalidDatesCount: number;
   warnings: {
     message: string;
     example: unknown;
@@ -98,6 +98,30 @@ export async function fetchAllLeadsSold(
  * @param log - Callback function for logging warnings.
  * @returns An array of objects representing rows for the CSV.
  */
+/**
+ * Safely formats a date string or Date object into 'YYYY-MM-DD' format.
+ * Returns an empty string if the date is null, undefined, or invalid.
+ * @param value The date to format.
+ * @returns The formatted date string or an empty string.
+ */
+export function formatHubspotDate(value: string | Date | null | undefined): string {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
 export function buildDealsAndLineItemsRows(
   leadsSold: SpotterLeadSold[],
   log: LogCallback
@@ -106,6 +130,7 @@ export function buildDealsAndLineItemsRows(
   const logObject: LogObject = {
     totalLeadsSold: leadsSold.length,
     totalLineItems: 0,
+    invalidDatesCount: 0,
     warnings: [],
   };
 
@@ -132,7 +157,16 @@ export function buildDealsAndLineItemsRows(
     for (const product of products) {
       // Unit price calculation: use individualValue, but if there's a discount and quantity > 0,
       // it might be better to use finalValue / quantity. Let's stick to individualValue for now as requested.
-      const unitPrice = (product.individualValue ?? 0).toString().replace('.', ',');
+      const unitPrice = (product.individualValue ?? 0).toString();
+
+      const formattedSaleDate = formatHubspotDate(sale.saleDate);
+      if (formattedSaleDate === '') {
+        logObject.invalidDatesCount++;
+        logObject.warnings.push({
+          message: `Data de venda inválida ou ausente para a Venda ID: ${sale.id}. O campo ficará vazio.`,
+          example: { saleId: sale.id, originalDate: sale.saleDate },
+        });
+      }
 
       const row: HubSpotDealAndLineItemRow = {
         'Deal Name': `Spotter #${sale.leadId} — Venda #${sale.id}`,
@@ -140,15 +174,14 @@ export function buildDealsAndLineItemsRows(
         'Deal Stage': dealStage,
         'Line Item Name': product.name,
         'Unit Price': unitPrice,
-        'Quantity': product.quantity ?? 1,
+        'Quantity': product.quantity,
         'spotter_lead_id': sale.leadId,
         'spotter_sale_id': sale.id,
         'ciclo_spotter': sale.cycle ?? '',
         'spotter_sale_stage': sale.saleStage,
-        'spotter_sale_date': sale.saleDate,
+        'spotter_sale_date': formattedSaleDate,
         'origem_comercial_real': '', // As per requirement
         'spotter_product_id': product.id,
-        'spotter_line_item_sale_id': sale.id, // Explicitly linking line item to the sale
         'spotter_full_value': product.fullValue ?? 0,
         'spotter_final_value': product.finalValue ?? 0,
         'spotter_discount_amount': product.discountAmount ?? 0,
