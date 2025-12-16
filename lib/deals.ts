@@ -1,264 +1,343 @@
-import { fetchAllSpotterOData } from './spotter';
+// lib/deals.ts
 import { buildCsv, sanitizeCsvValue } from './csv';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
 
+//region Constants & Configuration
+const HUBSPOT_PIPELINE = process.env.HUBSPOT_DEALS_PIPELINE_LABEL || 'default';
+const HUBSPOT_DEALSTAGE_MAP_JSON = process.env.HUBSPOT_DEALSTAGE_MAP_JSON || '{}';
+
+const HUBSPOT_DEALSTAGE_MAP: Record<string, string> = (() => {
+  try {
+    return JSON.parse(HUBSPOT_DEALSTAGE_MAP_JSON);
+  } catch {
+    // Fallback to a default map if JSON is invalid
+    return {
+      'QUALIFICADO': 'appointmentscheduled',
+      'CONTRATO ENVIADO': 'contractsent',
+      'NEGOCIACAO': 'decisionmakerboughtin',
+    };
+  }
+})();
+const DEFAULT_DEAL_STAGE = 'appointmentscheduled'; // A safe, early-stage fallback
+
+const RETRY_CONFIG = {
+  attempts: 6,
+  initialDelay: 500, // ms
+  maxDelay: 10000, // ms
+};
+//endregion
+
 //region Type Definitions
+export type LogCallback = (message: string) => void;
+
+// OData generic response
+export type ODataResponse<T> = {
+  value?: T[];
+  ['@odata.nextLink']?: string;
+};
 
 // Spotter API Interfaces
-interface SpotterProductLine {
+export interface SpotterSoldProduct {
   id: number;
-  name: string;
-  quantity: number;
-  individualValue: number;
-  discountAmount: number | null;
-  discountType: string | null;
-  fullValue: number;
-  finalValue: number;
+  quantity?: number;
+  individualValue?: number;
+  discountAmount?: number;
+  discountType?: string;
+  finalValue?: number;
+  name?: string;
+  fullValue?: number;
 }
 
-export interface SpotterLeadSold {
+export interface SpotterSale {
   leadId: number;
   saleDate: string;
-  saleStage: string;
-  cycle: string | null;
-  totalDealValue: number;
+  saleStage?: string;
+  cycle?: number;
+  totalDealValue?: number;
   id: number; // Sale ID
-  products?: SpotterProductLine[];
+  products?: SpotterSoldProduct[];
+  salesRep?: { email?: string };
+  preSales?: { email?: string };
+}
+
+export interface SpotterLead {
+  id: number;
+  source?: { value?: string };
 }
 
 // HubSpot CSV Row Interface
-export interface HubSpotDealAndLineItemRow {
-  'Deal Name': string;
+export interface HubSpotDealLineItemRow {
+  'Nome do negócio': string;
   'Pipeline': string;
-  'Deal Stage': string;
-  'Line Item Name': string;
-  'Unit Price': string;
-  'Quantity': number;
-  'spotter_lead_id': number;
-  'spotter_sale_id': number; // Maps to Deal
-  'ciclo_spotter': string;
-  'spotter_sale_stage': string;
+  'Etapa do negócio': string;
+  'Nome': string; // Line Item Name
+  'Preço unitário': string;
+  'Quantidade': string;
+  'spotter_lead_id': string;
+  'spotter_sale_id': string;
   'spotter_sale_date': string;
-  'origem_comercial_real': string; // Empty as per requirement
-  'spotter_product_id': number; // Maps to Line Item
-  'spotter_full_value': number;
-  'spotter_final_value': number;
-  'spotter_discount_amount': number;
+  'spotter_sale_stage': string;
+  'spotter_cycle': string;
+  'spotter_total_deal_value': string;
+  'spotter_salesrep_email': string;
+  'spotter_presales_email': string;
+  'origem_comercial_real': string;
+  'spotter_product_id': string;
+  'spotter_individual_value': string;
+  'spotter_discount_amount': string;
   'spotter_discount_type': string;
+  'spotter_final_value': string;
 }
 
-// Log Callback Type
-export type LogCallback = (message: string) => void;
-
+// Log object for the JSON file
 type LogObject = {
-  totalLeadsSold: number;
-  totalLineItems: number;
-  invalidDatesCount: number;
-  warnings: {
-    message: string;
-    example: unknown;
-  }[];
+  totalLeadsFetched: number;
+  totalSalesFetched: number;
+  totalRowsGenerated: number;
+  warnings: { message: string; data: unknown }[];
+  errors: { message: string; details: unknown }[];
+  csvSample: HubSpotDealLineItemRow[];
 };
-
 //endregion
 
-//region Mappings
+//region Utility Functions
+/**
+ * A resilient fetch implementation with exponential backoff and jitter.
+ */
+async function resilientFetch(url: string, options: RequestInit, log: LogCallback): Promise<Response> {
+  let lastError: Error | undefined;
 
-const SALE_STAGE_TO_DEAL_STAGE_MAP: Record<string, string> = {
-  'QUALIFICADO': 'Entrada',
-  'CONTRATO ENVIADO': 'Proposta/Contrato Enviado',
-  'NEGOCIACAO': 'Negociação',
-  // Add other mappings as needed
-};
-const DEFAULT_DEAL_STAGE = 'Entrada';
-const DEFAULT_PIPELINE = 'default';
+  for (let i = 0; i < RETRY_CONFIG.attempts; i++) {
+    const delay = Math.min(RETRY_CONFIG.maxDelay, RETRY_CONFIG.initialDelay * Math.pow(2, i));
+    const jitter = delay * 0.2 * Math.random();
+    const waitTime = delay + jitter;
 
-//endregion
-
-//region Data Fetching
-
-export async function fetchAllLeadsSold(
-  token: string,
-  baseUrl: string,
-  log: LogCallback
-): Promise<SpotterLeadSold[]> {
-  const initialUrl = `${baseUrl}/v3/LeadsSold`;
-  return fetchAllSpotterOData<SpotterLeadSold>(initialUrl, token, log);
+    try {
+      const response = await fetch(url, options);
+      if (response.status === 503 || response.status >= 500) {
+        throw new Error(`Spotter API returned a server error: ${response.status}`);
+      }
+      if (!response.ok) {
+        log(`Warning: Spotter API returned a non-OK status: ${response.status}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      log(`Attempt ${i + 1}/${RETRY_CONFIG.attempts} failed: ${lastError.message}. Retrying in ${Math.round(waitTime)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+  throw new Error(`Failed to fetch from Spotter API after ${RETRY_CONFIG.attempts} attempts. Last error: ${lastError?.message}`);
 }
 
-//endregion
-
-//region Data Transformation and CSV Building
-
 /**
- * Transforms Spotter sale data into an array of HubSpot-compatible CSV rows.
- * Each product in a sale becomes a separate row (a line item).
- * @param leadsSold - Array of sales data from Spotter.
- * @param log - Callback function for logging warnings.
- * @returns An array of objects representing rows for the CSV.
+ * Generic function to fetch all pages from a Spotter OData endpoint with retry logic.
  */
-/**
- * Safely formats a date string or Date object into 'YYYY-MM-DD' format.
- * Returns an empty string if the date is null, undefined, or invalid.
- * @param value The date to format.
- * @returns The formatted date string or an empty string.
- */
-export function formatHubspotDate(value: string | Date | null | undefined): string {
-  if (!value) {
-    return '';
+async function fetchAllSpotterDataWithRetries<T>(initialUrl: string, token: string, log: LogCallback): Promise<T[]> {
+  let allItems: T[] = [];
+  let nextUrl: string | undefined = initialUrl;
+  let page = 1;
+
+  while (nextUrl) {
+    log(`Fetching page ${page} from ${nextUrl.split('?')[0]}...`);
+    const response = await resilientFetch(nextUrl, { headers: { 'token_exact': token } }, log);
+    const data: ODataResponse<T> = await response.json();
+    const items = data.value ?? [];
+
+    if (items.length === 0) {
+      log('Received an empty page. Finalizing fetch.');
+      break;
+    }
+
+    allItems = allItems.concat(items);
+    log(`Fetched ${items.length} items from page ${page}. Total so far: ${allItems.length}.`);
+    nextUrl = data['@odata.nextLink'];
+    page++;
   }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
+  return allItems;
 }
 
-export function buildDealsAndLineItemsRows(
-  leadsSold: SpotterLeadSold[],
-  log: LogCallback
-): { rows: HubSpotDealAndLineItemRow[]; logObject: LogObject } {
-  const rows: HubSpotDealAndLineItemRow[] = [];
-  const logObject: LogObject = {
-    totalLeadsSold: leadsSold.length,
-    totalLineItems: 0,
-    invalidDatesCount: 0,
-    warnings: [],
-  };
+/**
+ * Formats an ISO date string to DD/MM/AAAA.
+ */
+function formatDateBR(isoString: string | null | undefined): string {
+  if (!isoString) return '';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return '';
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const year = date.getUTCFullYear();
+    return `${day}/${month}/${year}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Normalizes discount type strings.
+ */
+function normalizeDiscountType(type: string | null | undefined): string {
+  if (!type) return 'Nenhum';
+  const lowerType = type.toLowerCase();
+  if (lowerType.includes('absoluto')) return 'Absoluto';
+  if (lowerType.includes('percentual')) return 'Porcentual';
+  return type; // Return original if not recognized
+}
+//endregion
+
+//region Data Fetching and Processing
+async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, { sourceValue?: string }>> {
+  const leads = await fetchAllSpotterDataWithRetries<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
+  const leadsById = new Map<number, { sourceValue?: string }>();
+  for (const lead of leads) {
+    leadsById.set(lead.id, { sourceValue: lead.source?.value });
+  }
+  return leadsById;
+}
+
+async function fetchAllLeadsSold(token: string, baseUrl: string, log: LogCallback): Promise<SpotterSale[]> {
+  return fetchAllSpotterDataWithRetries<SpotterSale>(`${baseUrl}/v3/LeadsSold`, token, log);
+}
+
+function buildDealsAndLineItemsRows(
+  leadsSold: SpotterSale[],
+  leadsById: Map<number, { sourceValue?: string }>,
+  logObject: LogObject
+): HubSpotDealLineItemRow[] {
+  const rows: HubSpotDealLineItemRow[] = [];
 
   for (const sale of leadsSold) {
     const products = sale.products ?? [];
     if (products.length === 0) {
       logObject.warnings.push({
-        message: `Venda com ID ${sale.id} (Lead ID: ${sale.leadId}) não possui itens de linha e será ignorada.`,
-        example: { saleId: sale.id, leadId: sale.leadId },
+        message: `Sale ID ${sale.id} has no products and will be skipped.`,
+        data: { saleId: sale.id, leadId: sale.leadId },
       });
-      continue; // Skip sales without products
+      continue;
     }
 
-    logObject.totalLineItems += products.length;
-
-    const dealStage = SALE_STAGE_TO_DEAL_STAGE_MAP[sale.saleStage] ?? DEFAULT_DEAL_STAGE;
-    if (!SALE_STAGE_TO_DEAL_STAGE_MAP[sale.saleStage]) {
+    const saleStage = sale.saleStage ?? '';
+    const dealStage = HUBSPOT_DEALSTAGE_MAP[saleStage] ?? DEFAULT_DEAL_STAGE;
+    if (!HUBSPOT_DEALSTAGE_MAP[saleStage]) {
       logObject.warnings.push({
-        message: `Etapa de venda "${sale.saleStage}" não mapeada. Usando etapa padrão: "${DEFAULT_DEAL_STAGE}".`,
-        example: { saleStage: sale.saleStage, saleId: sale.id },
+        message: `Unmapped saleStage "${saleStage}". Falling back to default: "${DEFAULT_DEAL_STAGE}".`,
+        data: { saleId: sale.id, saleStage },
       });
     }
+
+    const dealData = {
+      'Nome do negócio': `${sale.leadId} - Venda Spotter #${sale.id}`,
+      'Pipeline': HUBSPOT_PIPELINE,
+      'Etapa do negócio': dealStage,
+      'spotter_lead_id': String(sale.leadId),
+      'spotter_sale_id': String(sale.id),
+      'spotter_sale_date': formatDateBR(sale.saleDate),
+      'spotter_sale_stage': saleStage,
+      'spotter_cycle': String(sale.cycle ?? ''),
+      'spotter_total_deal_value': String(sale.totalDealValue ?? 0),
+      'spotter_salesrep_email': sale.salesRep?.email ?? '',
+      'spotter_presales_email': sale.preSales?.email ?? '',
+      'origem_comercial_real': leadsById.get(sale.leadId)?.sourceValue ?? '',
+    };
 
     for (const product of products) {
-      // Unit price calculation: use individualValue, but if there's a discount and quantity > 0,
-      // it might be better to use finalValue / quantity. Let's stick to individualValue for now as requested.
-      const unitPrice = (product.individualValue ?? 0).toString();
+      const name = product.name ?? 'Produto sem nome';
+      const quantity = product.quantity ?? 1;
+      const unitPrice = product.individualValue ?? product.fullValue ?? 0;
 
-      const formattedSaleDate = formatHubspotDate(sale.saleDate);
-      if (formattedSaleDate === '') {
-        logObject.invalidDatesCount++;
+      if (!name || name === 'Produto sem nome') {
         logObject.warnings.push({
-          message: `Data de venda inválida ou ausente para a Venda ID: ${sale.id}. O campo ficará vazio.`,
-          example: { saleId: sale.id, originalDate: sale.saleDate },
+          message: `Product in Sale ID ${sale.id} has no name.`,
+          data: { saleId: sale.id, productId: product.id },
         });
       }
 
-      const row: HubSpotDealAndLineItemRow = {
-        'Deal Name': `Spotter #${sale.leadId} — Venda #${sale.id}`,
-        'Pipeline': DEFAULT_PIPELINE,
-        'Deal Stage': dealStage,
-        'Line Item Name': product.name,
-        'Unit Price': unitPrice,
-        'Quantity': product.quantity,
-        'spotter_lead_id': sale.leadId,
-        'spotter_sale_id': sale.id,
-        'ciclo_spotter': sale.cycle ?? '',
-        'spotter_sale_stage': sale.saleStage,
-        'spotter_sale_date': formattedSaleDate,
-        'origem_comercial_real': '', // As per requirement
-        'spotter_product_id': product.id,
-        'spotter_full_value': product.fullValue ?? 0,
-        'spotter_final_value': product.finalValue ?? 0,
-        'spotter_discount_amount': product.discountAmount ?? 0,
-        'spotter_discount_type': product.discountType ?? '',
+      const row: HubSpotDealLineItemRow = {
+        ...dealData,
+        'Nome': name,
+        'Quantidade': String(quantity),
+        'Preço unitário': String(unitPrice),
+        'spotter_product_id': String(product.id),
+        'spotter_individual_value': String(product.individualValue ?? 0),
+        'spotter_discount_amount': String(product.discountAmount ?? 0),
+        'spotter_discount_type': normalizeDiscountType(product.discountType),
+        'spotter_final_value': String(product.finalValue ?? 0),
       };
       rows.push(row);
     }
   }
-
-  log(
-    `Processamento concluído. ${rows.length} linhas de itens de linha geradas a partir de ${leadsSold.length} vendas.`
-  );
-  if (logObject.warnings.length > 0) {
-    log(`Foram registrados ${logObject.warnings.length} avisos. Verifique o arquivo de log para mais detalhes.`);
-  }
-
-  return { rows, logObject };
+  return rows;
 }
-
 //endregion
 
-
-//region Main Export Function
-
+//region Main Export Orchestrator
 export async function exportDealsAndLineItemsToCsv(
   token: string,
   baseUrl: string,
   log: LogCallback
 ): Promise<{ csvContent: string }> {
-  log('Iniciando exportação de Negócios e Itens de Linha...');
+  const logObject: LogObject = {
+    totalLeadsFetched: 0,
+    totalSalesFetched: 0,
+    totalRowsGenerated: 0,
+    warnings: [],
+    errors: [],
+    csvSample: [],
+  };
 
-  // 1. Fetch data
-  const leadsSold = await fetchAllLeadsSold(token, baseUrl, log);
-  if (leadsSold.length === 0) {
-    log('Nenhuma venda encontrada para exportar.');
-    return { csvContent: '' };
+  try {
+    log('Fetching Leads from /v3/Leads to enrich source data...');
+    const leadsById = await fetchAllLeads(token, baseUrl, log);
+    logObject.totalLeadsFetched = leadsById.size;
+    log(`Fetched ${leadsById.size} unique leads.`);
+
+    log('Fetching sales data from /v3/LeadsSold...');
+    const leadsSold = await fetchAllLeadsSold(token, baseUrl, log);
+    logObject.totalSalesFetched = leadsSold.length;
+    log(`Fetched ${leadsSold.length} sales records.`);
+
+    log('Building CSV rows and exploding line items...');
+    const rows = buildDealsAndLineItemsRows(leadsSold, leadsById, logObject);
+    logObject.totalRowsGenerated = rows.length;
+    log(`Generated ${rows.length} CSV rows.`);
+
+    if (rows.length === 0) {
+      log('No valid rows were generated. The CSV will be empty.');
+      await writeLogFile(logObject);
+      return { csvContent: '' };
+    }
+
+    log('Generating CSV content...');
+    logObject.csvSample = rows.slice(0, 3);
+    const headers = Object.keys(rows[0]) as (keyof HubSpotDealLineItemRow)[];
+    const csvRows = rows.map(row => headers.map(header => sanitizeCsvValue(row[header])));
+
+    const csvContent = buildCsv(headers, csvRows);
+    log(`CSV generation complete. Total warnings: ${logObject.warnings.length}.`);
+    log(`Final message: Exportação concluída: ${logObject.totalSalesFetched} negócios, ${logObject.totalRowsGenerated} itens de linha, arquivo pronto para import no HubSpot.`);
+
+    await writeLogFile(logObject);
+    return { csvContent };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+    log(`FATAL ERROR: ${errorMessage}`);
+    logObject.errors.push({ message: errorMessage, details: error });
+    await writeLogFile(logObject);
+    throw error; // Re-throw to be caught by the API route
   }
-
-  // 2. Transform data
-  log('Transformando dados para o formato HubSpot...');
-  const { rows, logObject } = buildDealsAndLineItemsRows(leadsSold, log);
-
-  // 3. Build CSV
-  if (rows.length === 0) {
-    log('Nenhuma linha de item de linha foi gerada. O CSV estará vazio.');
-     await writeLogFile(logObject); // Still write the log
-    return { csvContent: '' };
-  }
-  log('Gerando conteúdo do arquivo CSV...');
-  const headers = Object.keys(rows[0]);
-  const csvRows = rows.map(row =>
-    headers.map(header =>
-      sanitizeCsvValue(row[header as keyof HubSpotDealAndLineItemRow])
-    )
-  );
-
-  const csvContent = buildCsv(headers, csvRows);
-  log('Geração do CSV concluída.');
-
-
-  // 4. Write Log File
-  await writeLogFile(logObject);
-
-
-  return { csvContent };
 }
 
 async function writeLogFile(logObject: LogObject): Promise<void> {
   const exportsDir = join(process.cwd(), 'exports');
-  const logFilePath = join(exportsDir, 'spotter_to_hubspot_deals_line_items.log.json');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logFilePath = join(exportsDir, `spotter_to_hubspot_deals_line_items_${timestamp}.log.json`);
   try {
-
     await writeFile(logFilePath, JSON.stringify(logObject, null, 2), 'utf-8');
     console.log(`Log file saved to ${logFilePath}`);
   } catch (error) {
     console.error('Failed to write log file:', error);
-    // Do not throw, as this is a side effect and shouldn't fail the main operation.
   }
 }
 //endregion
