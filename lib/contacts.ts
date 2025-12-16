@@ -282,7 +282,7 @@ export async function exportContactsToCsv(
 
   // Save log file
   try {
-    const exportsDir = path.join(process.cwd(), 'exports');
+    const exportsDir = path.join('/tmp', 'exports');
     fs.mkdirSync(exportsDir, { recursive: true });
     const logFilePath = path.join(exportsDir, 'spotter_to_hubspot_contatos.log.json');
     fs.writeFileSync(logFilePath, JSON.stringify(logFile, null, 2));

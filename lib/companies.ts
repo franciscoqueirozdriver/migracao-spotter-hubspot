@@ -195,7 +195,7 @@ export async function exportCompaniesToCsv(
 
   // Save log file
   try {
-    const exportsDir = path.join(process.cwd(), 'exports');
+    const exportsDir = path.join('/tmp', 'exports');
     fs.mkdirSync(exportsDir, { recursive: true });
     const logFilePath = path.join(exportsDir, 'logs_empresas.json');
     fs.writeFileSync(logFilePath, JSON.stringify(logData, null, 2));

@@ -38,7 +38,7 @@ export async function GET() {
 
         // 3. Cache rejected contacts data temporarily
         if (rejectedRows.length > 0) {
-          const exportsDir = path.join(process.cwd(), 'exports');
+          const exportsDir = path.join('/tmp', 'exports');
           fs.mkdirSync(exportsDir, { recursive: true });
           const rejectedJsonPath = path.join(exportsDir, `rejected-${exportId}.json`);
           fs.writeFileSync(rejectedJsonPath, JSON.stringify(rejectedRows));

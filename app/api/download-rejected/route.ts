@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const tempFilePath = path.join(process.cwd(), 'exports', `rejected-${id}.json`);
+  const tempFilePath = path.join('/tmp', 'exports', `rejected-${id}.json`);
 
   try {
     if (!fs.existsSync(tempFilePath)) {
