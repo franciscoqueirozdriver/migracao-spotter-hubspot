@@ -1,15 +1,16 @@
 // app/api/export-contacts/route.ts
-import { exportContactsToCsv } from '../../../lib/contacts';
+import { exportContactsToCsv, CONTACT_HEADERS } from '../../../lib/contacts';
+import { buildCsv, sanitizeCsvValue } from '../../../lib/csv';
 import fs from 'fs';
 import path from 'path';
 
-export const dynamic = 'force-dynamic'; // Garante que a rota não seja estática
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const token = process.env.SPOTTER_TOKEN_EXACT;
 
   if (!token) {
-    return new Response(JSON.stringify({ type: 'error', message: 'Variável de ambiente SPOTTER_TOKEN_EXACT não configurada.' }), {
+    return new Response(JSON.stringify({ type: 'error', message: 'SPOTTER_TOKEN_EXACT not configured.' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -18,47 +19,44 @@ export async function GET() {
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
-      const sendData = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
-
+      const send = (data: object) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       const log = (message: string) => {
-        console.log(message); // Log no servidor
-        sendData({ type: 'log', message });
+        console.log(message);
+        send({ type: 'log', message });
       };
 
       try {
-        const { csvContent, rejectedCsvContent, logData } = await exportContactsToCsv(token, log);
+        const { validRows, rejectedRows, logData } = await exportContactsToCsv(token, log);
 
-        // Salvar o CSV de contatos rejeitados no servidor
-        try {
+        // 1. Generate unique ID for this export
+        const exportId = `export-${Date.now()}`;
+
+        // 2. Build CSV for valid contacts
+        const validCsvRows = validRows.map(row => CONTACT_HEADERS.map(header => sanitizeCsvValue(row[header])));
+        const csvContent = buildCsv(CONTACT_HEADERS, validCsvRows);
+        log('CSV de contatos válidos gerado.');
+
+        // 3. Cache rejected contacts data temporarily
+        if (rejectedRows.length > 0) {
           const exportsDir = path.join(process.cwd(), 'exports');
           fs.mkdirSync(exportsDir, { recursive: true });
-          const rejectedCsvPath = path.join(exportsDir, 'spotter_to_hubspot_contatos__rejeitados_normalizar.csv');
-          fs.writeFileSync(rejectedCsvPath, rejectedCsvContent);
-          log(`Arquivo de contatos rejeitados salvo em: ${rejectedCsvPath}`);
-          log(`Total de contatos buscados: ${logData.stats.receivedPersons}`);
-          log(`Total exportado com sucesso: ${logData.stats.validContacts}`);
-          log(`Total rejeitado para normalização: ${rejectedCsvContent.length > 0 ? logData.stats.skippedNoEmail + logData.stats.skippedDuplicates : 0}`);
-          log(`- Rejeitados por falta de e-mail: ${logData.stats.skippedNoEmail}`);
-          log(`- Rejeitados por e-mail duplicado: ${logData.stats.skippedDuplicates}`);
-
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-          log(`ERRO ao salvar o CSV de contatos rejeitados: ${errorMessage}`);
-          // Não para a execução, apenas loga o erro.
+          const rejectedJsonPath = path.join(exportsDir, `rejected-${exportId}.json`);
+          fs.writeFileSync(rejectedJsonPath, JSON.stringify(rejectedRows));
+          log(`Dados de contatos rejeitados salvos temporariamente. ID: ${exportId}`);
         }
 
-        sendData({
+        // 4. Send 'done' signal with CSV content and exportId
+        send({
           type: 'done',
           csvContent: csvContent,
-          logFileName: 'spotter_to_hubspot_contatos.log.json',
-          logContent: JSON.stringify(logData, null, 2),
+          exportId: rejectedRows.length > 0 ? exportId : null,
+          logData: logData,
         });
+
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Um erro desconhecido ocorreu no servidor.';
-        log(`ERRO FATAL: ${errorMessage}`);
-        sendData({ type: 'error', message: errorMessage });
+        const message = error instanceof Error ? error.message : 'Unknown server error.';
+        log(`FATAL ERROR: ${message}`);
+        send({ type: 'error', message });
       } finally {
         controller.close();
       }

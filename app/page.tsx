@@ -53,8 +53,20 @@ export default function HomePage() {
       if (data.type === 'log') {
         setLogs((prevLogs) => [...prevLogs, data.message]);
       } else if (data.type === 'done') {
-        setLogs((prevLogs) => [...prevLogs, 'Exportação concluída. Download iniciado...']);
+        setLogs((prevLogs) => [...prevLogs, 'Exportação principal concluída. Iniciando download...']);
         downloadCsv(data.csvContent, fileName);
+
+        // Ask the user if they want to download the rejected contacts file
+        if (data.exportId) {
+          const downloadRejected = window.confirm(
+            'Deseja baixar o arquivo com os contatos que precisam ser normalizados (rejeitados)?'
+          );
+          if (downloadRejected) {
+            setLogs((prevLogs) => [...prevLogs, 'Iniciando download do arquivo de contatos a normalizar...']);
+            window.location.href = `/api/download-rejected?id=${data.exportId}`;
+          }
+        }
+
         setIsLoading(false);
         eventSource.close();
       } else if (data.type === 'error') {

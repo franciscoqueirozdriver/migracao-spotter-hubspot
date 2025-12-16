@@ -67,7 +67,7 @@ interface ExportLog {
 type LogCallback = (message: string) => void;
 
 // --- HubSpot CSV Configuration ---
-const CONTACT_HEADERS: (keyof HubSpotContactRow)[] = [
+export const CONTACT_HEADERS: (keyof HubSpotContactRow)[] = [
   'E-mail',
   'Nome',
   'Sobrenome',
@@ -213,7 +213,7 @@ function processAndDeduplicatePersons(
 export async function exportContactsToCsv(
   token: string,
   log: LogCallback
-): Promise<{ csvContent: string; rejectedCsvContent: string; logData: ExportLog }> {
+): Promise<{ validRows: HubSpotContactRow[]; rejectedRows: HubSpotRejectedContactRow[]; logData: ExportLog }> {
   log('Iniciando exportação de contatos...');
 
   const stats: ExportContactsStats = {
@@ -280,25 +280,6 @@ export async function exportContactsToCsv(
   log(`${stats.skippedDuplicates} contatos duplicados (por e-mail) ignorados.`);
   log(`${stats.warnings.singleNameNoLastname} contatos com nome único (sobrenome definido como '-').`);
 
-  log('Gerando arquivo CSV para contatos válidos...');
-  const csvRows = validRows.map(row =>
-    CONTACT_HEADERS.map(header => sanitizeCsvValue(row[header]))
-  );
-  const csvContent = buildCsv(CONTACT_HEADERS, csvRows);
-  log('Geração do CSV de contatos válidos concluída.');
-
-  log('Gerando arquivo CSV para contatos rejeitados...');
-  const rejectedHeaders: (keyof HubSpotRejectedContactRow)[] = [
-    ...CONTACT_HEADERS,
-    'reject_reason',
-    'reject_detail',
-  ];
-  const rejectedCsvRows = rejectedRows.map(row =>
-    rejectedHeaders.map(header => sanitizeCsvValue(row[header]))
-  );
-  const rejectedCsvContent = buildCsv(rejectedHeaders, rejectedCsvRows);
-  log(`Geração do CSV de contatos rejeitados concluída com ${rejectedRows.length} linhas.`);
-
   // Save log file
   try {
     const exportsDir = path.join(process.cwd(), 'exports');
@@ -312,5 +293,5 @@ export async function exportContactsToCsv(
     logFile.errors.push({ message: `Failed to save log file: ${errorMessage}` });
   }
 
-  return { csvContent, rejectedCsvContent, logData: logFile };
+  return { validRows, rejectedRows, logData: logFile };
 }
