@@ -79,6 +79,55 @@ export async function exportProductsToCsv(token: string, baseUrl: string, log: L
   return csvContent;
 }
 
+// lib/spotter.ts
+
+export type ODataResponse<T> = {
+  value?: T[];
+  ['@odata.nextLink']?: string;
+};
+
+export async function fetchAllSpotterOData<T>(
+  initialUrl: string,
+  token: string,
+  log: LogCallback
+): Promise<T[]> {
+  let allItems: T[] = [];
+  let nextUrl: string | undefined = initialUrl;
+  let page = 1;
+
+  log(`Iniciando busca OData em ${initialUrl}`);
+
+  while (nextUrl) {
+    log(`Buscando página ${page}...`);
+    const response = await fetch(nextUrl, {
+      headers: { 'token_exact': token },
+    });
+
+    if (!response.ok) {
+      const errorText = `A API do Spotter retornou um erro: ${response.status} ${response.statusText}.`;
+      log(`ERRO: ${errorText}`);
+      // Lançar o erro permite que o chamador decida como lidar com ele (ex: fallback)
+      throw new Error(errorText);
+    }
+
+    const data: ODataResponse<T> = await response.json();
+    const items = data.value ?? [];
+
+    if (items.length === 0) {
+      log('Recebida uma página vazia. Finalizando a busca.');
+      break;
+    }
+
+    allItems = allItems.concat(items);
+    log(`Recebidos ${items.length} itens.`);
+    nextUrl = data['@odata.nextLink'];
+    page++;
+  }
+
+  log(`Busca OData concluída. Total de ${allItems.length} itens recebidos.`);
+  return allItems;
+}
+
 // The helper functions need to be included as well, but they don't change.
 // I'll paste them back in.
 
