@@ -38,6 +38,13 @@ export interface HubSpotContactRow {
   'spotter_messaging_id': string;
 }
 
+export type RejectReason = 'NO_EMAIL' | 'DUPLICATE_EMAIL' | 'SINGLE_NAME_NO_LASTNAME' | 'OTHER';
+
+export interface HubSpotRejectedContactRow extends HubSpotContactRow {
+  reject_reason: RejectReason;
+  reject_detail: string;
+}
+
 export interface ExportContactsStats {
   fetchStrategy: 'global' | 'per-lead' | 'none';
   receivedLeads: number;
@@ -123,7 +130,7 @@ function splitName(fullName?: string | null): { firstName: string; lastName: str
 
 interface ProcessedContacts {
   validRows: HubSpotContactRow[];
-  rejectedRows: { person: SpotterPerson; reason: string }[];
+  rejectedRows: HubSpotRejectedContactRow[];
 }
 
 function processAndDeduplicatePersons(
@@ -133,20 +140,42 @@ function processAndDeduplicatePersons(
 ): ProcessedContacts {
   const seenEmails = new Set<string>();
   const validRows: HubSpotContactRow[] = [];
-  const rejectedRows: { person: SpotterPerson; reason: string }[] = [];
+  const rejectedRows: HubSpotRejectedContactRow[] = [];
 
   for (const person of persons) {
     const email = person.email?.trim().toLowerCase();
 
+    const baseRow = {
+      'E-mail': person.email ?? '',
+      'Nome': splitName(person.name).firstName,
+      'Sobrenome': splitName(person.name).lastName,
+      'Cargo': person.jobTitle ?? '',
+      'Telefone': person.phone1 ?? '',
+      'Telefone 2': person.phone2 ?? '',
+      'spotter_person_id': String(person.id),
+      'spotter_lead_id': String(person.leadId),
+      'spotter_main_contact': String(person.mainContact ?? false),
+      'spotter_messaging_platform': person.messagingPlatform ?? '',
+      'spotter_messaging_id': person.idMessagingPlataform ?? '',
+    };
+
     if (!email) {
       stats.skippedNoEmail++;
-      rejectedRows.push({ person, reason: 'E-mail ausente' });
+      rejectedRows.push({
+        ...baseRow,
+        reject_reason: 'NO_EMAIL',
+        reject_detail: 'O campo de e-mail está vazio.',
+      });
       continue;
     }
 
     if (seenEmails.has(email)) {
       stats.skippedDuplicates++;
-      rejectedRows.push({ person, reason: 'E-mail duplicado' });
+      rejectedRows.push({
+        ...baseRow,
+        reject_reason: 'DUPLICATE_EMAIL',
+        reject_detail: `O e-mail '${email}' já foi processado.`,
+      });
       continue;
     }
 
@@ -259,14 +288,13 @@ export async function exportContactsToCsv(
   log('Geração do CSV de contatos válidos concluída.');
 
   log('Gerando arquivo CSV para contatos rejeitados...');
-  const rejectedHeaders = [...Object.keys(allPersons[0] || {}), 'motivo_rejeicao'];
-  const rejectedCsvRows = rejectedRows.map(({ person, reason }) =>
-    rejectedHeaders.map(header => {
-      if (header === 'motivo_rejeicao') {
-        return sanitizeCsvValue(reason);
-      }
-      return sanitizeCsvValue(person[header as keyof SpotterPerson]);
-    })
+  const rejectedHeaders: (keyof HubSpotRejectedContactRow)[] = [
+    ...CONTACT_HEADERS,
+    'reject_reason',
+    'reject_detail',
+  ];
+  const rejectedCsvRows = rejectedRows.map(row =>
+    rejectedHeaders.map(header => sanitizeCsvValue(row[header]))
   );
   const rejectedCsvContent = buildCsv(rejectedHeaders, rejectedCsvRows);
   log(`Geração do CSV de contatos rejeitados concluída com ${rejectedRows.length} linhas.`);

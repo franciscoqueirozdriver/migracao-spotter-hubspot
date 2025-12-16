@@ -34,9 +34,15 @@ export async function GET() {
         try {
           const exportsDir = path.join(process.cwd(), 'exports');
           fs.mkdirSync(exportsDir, { recursive: true });
-          const rejectedCsvPath = path.join(exportsDir, 'spotter_to_hubspot_contatos_rejeitados.csv');
+          const rejectedCsvPath = path.join(exportsDir, 'spotter_to_hubspot_contatos__rejeitados_normalizar.csv');
           fs.writeFileSync(rejectedCsvPath, rejectedCsvContent);
           log(`Arquivo de contatos rejeitados salvo em: ${rejectedCsvPath}`);
+          log(`Total de contatos buscados: ${logData.stats.receivedPersons}`);
+          log(`Total exportado com sucesso: ${logData.stats.validContacts}`);
+          log(`Total rejeitado para normalização: ${rejectedCsvContent.length > 0 ? logData.stats.skippedNoEmail + logData.stats.skippedDuplicates : 0}`);
+          log(`- Rejeitados por falta de e-mail: ${logData.stats.skippedNoEmail}`);
+          log(`- Rejeitados por e-mail duplicado: ${logData.stats.skippedDuplicates}`);
+
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
           log(`ERRO ao salvar o CSV de contatos rejeitados: ${errorMessage}`);
