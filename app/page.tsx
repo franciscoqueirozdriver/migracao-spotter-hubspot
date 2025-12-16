@@ -6,11 +6,12 @@ export default function HomePage() {
   const [isProductsLoading, setIsProductsLoading] = useState(false);
   const [isCompaniesLoading, setIsCompaniesLoading] = useState(false);
   const [isContactsLoading, setIsContactsLoading] = useState(false);
+  const [isDealsLoading, setIsDealsLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLPreElement>(null);
 
-  const startExport = (entity: 'products' | 'companies' | 'contacts') => {
+  const startExport = (entity: 'products' | 'companies' | 'contacts' | 'deals') => {
     let isLoading, setIsLoading, apiUrl, fileName;
 
     switch (entity) {
@@ -31,6 +32,12 @@ export default function HomePage() {
         setIsLoading = setIsContactsLoading;
         apiUrl = '/api/export-contacts';
         fileName = 'spotter_to_hubspot_contatos.csv';
+        break;
+      case 'deals':
+        isLoading = isDealsLoading;
+        setIsLoading = setIsDealsLoading;
+        apiUrl = '/api/export-deals-line-items';
+        fileName = 'spotter_to_hubspot_deals_line_items.csv';
         break;
     }
 
@@ -101,7 +108,7 @@ export default function HomePage() {
     }
   }, [logs]);
 
-  const anyExportRunning = isProductsLoading || isCompaniesLoading || isContactsLoading;
+  const anyExportRunning = isProductsLoading || isCompaniesLoading || isContactsLoading || isDealsLoading;
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
@@ -162,6 +169,25 @@ export default function HomePage() {
             }}
           >
             {isContactsLoading ? 'Exportando Contatos...' : 'Exportar Contatos (CSV)'}
+          </button>
+        </div>
+
+        <div>
+          <p>Exporta Negócios (Deals) e seus Itens de Linha (Line Items).</p>
+          <button
+            onClick={() => startExport('deals')}
+            disabled={anyExportRunning}
+            style={{
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
+              backgroundColor: isDealsLoading ? '#ccc' : '#fd7e14', // A new color for the new button
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+            }}
+          >
+            {isDealsLoading ? 'Exportando Negócios...' : 'Exportar Negócios + Itens de Linha (CSV)'}
           </button>
         </div>
       </div>
