@@ -1,5 +1,7 @@
 // app/api/export-contacts/route.ts
 import { exportContactsToCsv } from '../../../lib/contacts';
+import fs from 'fs';
+import path from 'path';
 
 export const dynamic = 'force-dynamic'; // Garante que a rota não seja estática
 
@@ -26,7 +28,20 @@ export async function GET() {
       };
 
       try {
-        const { csvContent, logData } = await exportContactsToCsv(token, log);
+        const { csvContent, rejectedCsvContent, logData } = await exportContactsToCsv(token, log);
+
+        // Salvar o CSV de contatos rejeitados no servidor
+        try {
+          const exportsDir = path.join(process.cwd(), 'exports');
+          fs.mkdirSync(exportsDir, { recursive: true });
+          const rejectedCsvPath = path.join(exportsDir, 'spotter_to_hubspot_contatos_rejeitados.csv');
+          fs.writeFileSync(rejectedCsvPath, rejectedCsvContent);
+          log(`Arquivo de contatos rejeitados salvo em: ${rejectedCsvPath}`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+          log(`ERRO ao salvar o CSV de contatos rejeitados: ${errorMessage}`);
+          // Não para a execução, apenas loga o erro.
+        }
 
         sendData({
           type: 'done',

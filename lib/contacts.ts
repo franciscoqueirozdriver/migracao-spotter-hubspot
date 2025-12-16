@@ -121,24 +121,32 @@ function splitName(fullName?: string | null): { firstName: string; lastName: str
   return { firstName, lastName, wasSplit: true };
 }
 
+interface ProcessedContacts {
+  validRows: HubSpotContactRow[];
+  rejectedRows: { person: SpotterPerson; reason: string }[];
+}
+
 function processAndDeduplicatePersons(
   persons: SpotterPerson[],
   stats: ExportContactsStats,
   logWarnings: (email: string, reason: string) => void
-): HubSpotContactRow[] {
+): ProcessedContacts {
   const seenEmails = new Set<string>();
-  const hubspotRows: HubSpotContactRow[] = [];
+  const validRows: HubSpotContactRow[] = [];
+  const rejectedRows: { person: SpotterPerson; reason: string }[] = [];
 
   for (const person of persons) {
     const email = person.email?.trim().toLowerCase();
 
     if (!email) {
       stats.skippedNoEmail++;
+      rejectedRows.push({ person, reason: 'E-mail ausente' });
       continue;
     }
 
     if (seenEmails.has(email)) {
       stats.skippedDuplicates++;
+      rejectedRows.push({ person, reason: 'E-mail duplicado' });
       continue;
     }
 
@@ -163,11 +171,11 @@ function processAndDeduplicatePersons(
       'spotter_messaging_platform': person.messagingPlatform ?? '',
       'spotter_messaging_id': person.idMessagingPlataform ?? '',
     };
-    hubspotRows.push(row);
+    validRows.push(row);
   }
 
-  stats.validContacts = hubspotRows.length;
-  return hubspotRows;
+  stats.validContacts = validRows.length;
+  return { validRows, rejectedRows };
 }
 
 
@@ -176,7 +184,7 @@ function processAndDeduplicatePersons(
 export async function exportContactsToCsv(
   token: string,
   log: LogCallback
-): Promise<{ csvContent: string; logData: ExportLog }> {
+): Promise<{ csvContent: string; rejectedCsvContent: string; logData: ExportLog }> {
   log('Iniciando exportação de contatos...');
 
   const stats: ExportContactsStats = {
@@ -237,19 +245,31 @@ export async function exportContactsToCsv(
   log(`Total de ${stats.receivedPersons} registros de contatos recebidos.`);
 
   log('Processando e deduplicando contatos...');
-  const hubspotRows = processAndDeduplicatePersons(allPersons, stats, logWarning);
+  const { validRows, rejectedRows } = processAndDeduplicatePersons(allPersons, stats, logWarning);
   log(`Processamento concluído. ${stats.validContacts} contatos válidos para exportação.`);
   log(`${stats.skippedNoEmail} contatos ignorados por falta de e-mail.`);
   log(`${stats.skippedDuplicates} contatos duplicados (por e-mail) ignorados.`);
   log(`${stats.warnings.singleNameNoLastname} contatos com nome único (sobrenome definido como '-').`);
 
-  log('Gerando arquivo CSV...');
-  const csvRows = hubspotRows.map(row =>
+  log('Gerando arquivo CSV para contatos válidos...');
+  const csvRows = validRows.map(row =>
     CONTACT_HEADERS.map(header => sanitizeCsvValue(row[header]))
   );
-
   const csvContent = buildCsv(CONTACT_HEADERS, csvRows);
-  log('Geração do CSV concluída.');
+  log('Geração do CSV de contatos válidos concluída.');
+
+  log('Gerando arquivo CSV para contatos rejeitados...');
+  const rejectedHeaders = [...Object.keys(allPersons[0] || {}), 'motivo_rejeicao'];
+  const rejectedCsvRows = rejectedRows.map(({ person, reason }) =>
+    rejectedHeaders.map(header => {
+      if (header === 'motivo_rejeicao') {
+        return sanitizeCsvValue(reason);
+      }
+      return sanitizeCsvValue(person[header as keyof SpotterPerson]);
+    })
+  );
+  const rejectedCsvContent = buildCsv(rejectedHeaders, rejectedCsvRows);
+  log(`Geração do CSV de contatos rejeitados concluída com ${rejectedRows.length} linhas.`);
 
   // Save log file
   try {
@@ -264,5 +284,5 @@ export async function exportContactsToCsv(
     logFile.errors.push({ message: `Failed to save log file: ${errorMessage}` });
   }
 
-  return { csvContent, logData: logFile };
+  return { csvContent, rejectedCsvContent, logData: logFile };
 }
