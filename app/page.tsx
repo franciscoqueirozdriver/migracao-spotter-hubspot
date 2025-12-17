@@ -181,7 +181,7 @@ export default function HomePage() {
               padding: '10px 20px',
               fontSize: '16px',
               cursor: anyExportRunning ? 'not-allowed' : 'pointer',
-              backgroundColor: isDealsLoading ? '#ccc' : '#fd7e14', // A new color for the new button
+              backgroundColor: isDealsLoading ? '#ccc' : '#fd7e14',
               color: 'white',
               border: 'none',
               borderRadius: '5px',
