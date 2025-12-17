@@ -5,21 +5,7 @@ import { join } from 'path';
 
 //region Constants & Configuration
 const HUBSPOT_PIPELINE = process.env.HUBSPOT_DEALS_PIPELINE_LABEL || 'default';
-const HUBSPOT_DEALSTAGE_MAP_JSON = process.env.HUBSPOT_DEALSTAGE_MAP_JSON || '{}';
-
-const HUBSPOT_DEALSTAGE_MAP: Record<string, string> = (() => {
-  try {
-    return JSON.parse(HUBSPOT_DEALSTAGE_MAP_JSON);
-  } catch {
-    // Fallback to a default map if JSON is invalid
-    return {
-      'QUALIFICADO': 'appointmentscheduled',
-      'CONTRATO ENVIADO': 'contractsent',
-      'NEGOCIACAO': 'decisionmakerboughtin',
-    };
-  }
-})();
-const DEFAULT_DEAL_STAGE = 'appointmentscheduled'; // A safe, early-stage fallback
+const HUBSPOT_DEAL_STAGE_SOLD = 'Vendido'; // Fixed value as per new requirement
 
 const RETRY_CONFIG = {
   attempts: 6,
@@ -31,7 +17,6 @@ const RETRY_CONFIG = {
 //region Type Definitions
 export type LogCallback = (message: string) => void;
 
-// OData generic response
 export type ODataResponse<T> = {
   value?: T[];
   ['@odata.nextLink']?: string;
@@ -52,47 +37,56 @@ export interface SpotterSoldProduct {
 export interface SpotterSale {
   leadId: number;
   saleDate: string;
+  id: number; // Sale ID
+  products?: SpotterSoldProduct[];
+  // Other fields are kept for type safety but not used in the new logic
   saleStage?: string;
   cycle?: number;
   totalDealValue?: number;
-  id: number; // Sale ID
-  products?: SpotterSoldProduct[];
   salesRep?: { email?: string };
   preSales?: { email?: string };
 }
 
 export interface SpotterLead {
   id: number;
+  lead?: string; // This is the lead name
+  organizationId?: number | null;
   source?: { value?: string };
+}
+
+export interface SpotterOrganization {
+    id: number;
+    name?: string;
 }
 
 // HubSpot CSV Row Interface
 export interface HubSpotDealLineItemRow {
-  'Nome do negócio': string;
-  'Pipeline': string;
-  'Etapa do negócio': string;
-  'Nome': string; // Line Item Name
-  'Preço unitário': string;
-  'Quantidade': string;
-  'spotter_lead_id': string;
-  'spotter_sale_id': string;
-  'spotter_sale_date': string;
-  'spotter_sale_stage': string;
-  'spotter_cycle': string;
-  'spotter_total_deal_value': string;
-  'spotter_salesrep_email': string;
-  'spotter_presales_email': string;
-  'origem_comercial_real': string;
-  'spotter_product_id': string;
-  'spotter_individual_value': string;
-  'spotter_discount_amount': string;
-  'spotter_discount_type': string;
-  'spotter_final_value': string;
+    'Nome do negócio': string;
+    'Pipeline': string;
+    'Etapa do negócio': string;
+    'Nome': string; // Line Item Name
+    'Preço unitário': string;
+    'Quantidade': string;
+    'spotter_lead_id': string;
+    'spotter_sale_id': string;
+    'spotter_sale_date': string;
+    'spotter_sale_stage': string;
+    'spotter_cycle': string;
+    'spotter_total_deal_value': string;
+    'spotter_salesrep_email': string;
+    'spotter_presales_email': string;
+    'origem_comercial_real': string;
+    'spotter_product_id': string;
+    'spotter_individual_value': string;
+    'spotter_discount_amount': string;
+    'spotter_discount_type': string;
+    'spotter_final_value': string;
 }
 
 // Log object for the JSON file
 type LogObject = {
   totalLeadsFetched: number;
+  totalOrgsFetched: number;
   totalSalesFetched: number;
   totalRowsGenerated: number;
   warnings: { message: string; data: unknown }[];
@@ -102,9 +96,6 @@ type LogObject = {
 //endregion
 
 //region Utility Functions
-/**
- * A resilient fetch implementation with exponential backoff and jitter.
- */
 async function resilientFetch(url: string, options: RequestInit, log: LogCallback): Promise<Response> {
   let lastError: Error | undefined;
 
@@ -118,9 +109,6 @@ async function resilientFetch(url: string, options: RequestInit, log: LogCallbac
       if (response.status === 503 || response.status >= 500) {
         throw new Error(`Spotter API returned a server error: ${response.status}`);
       }
-      if (!response.ok) {
-        log(`Warning: Spotter API returned a non-OK status: ${response.status}`);
-      }
       return response;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -131,9 +119,6 @@ async function resilientFetch(url: string, options: RequestInit, log: LogCallbac
   throw new Error(`Failed to fetch from Spotter API after ${RETRY_CONFIG.attempts} attempts. Last error: ${lastError?.message}`);
 }
 
-/**
- * Generic function to fetch all pages from a Spotter OData endpoint with retry logic.
- */
 async function fetchAllSpotterDataWithRetries<T>(initialUrl: string, token: string, log: LogCallback): Promise<T[]> {
   let allItems: T[] = [];
   let nextUrl: string | undefined = initialUrl;
@@ -158,9 +143,6 @@ async function fetchAllSpotterDataWithRetries<T>(initialUrl: string, token: stri
   return allItems;
 }
 
-/**
- * Formats an ISO date string to DD/MM/AAAA.
- */
 function formatDateBR(isoString: string | null | undefined): string {
   if (!isoString) return '';
   try {
@@ -174,36 +156,49 @@ function formatDateBR(isoString: string | null | undefined): string {
     return '';
   }
 }
-
-/**
- * Normalizes discount type strings.
- */
-function normalizeDiscountType(type: string | null | undefined): string {
-  if (!type) return 'Nenhum';
-  const lowerType = type.toLowerCase();
-  if (lowerType.includes('absoluto')) return 'Absoluto';
-  if (lowerType.includes('percentual')) return 'Porcentual';
-  return type; // Return original if not recognized
-}
 //endregion
 
 //region Data Fetching and Processing
-async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, { sourceValue?: string }>> {
-  const leads = await fetchAllSpotterDataWithRetries<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
-  const leadsById = new Map<number, { sourceValue?: string }>();
-  for (const lead of leads) {
-    leadsById.set(lead.id, { sourceValue: lead.source?.value });
-  }
-  return leadsById;
+async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>> {
+    const leads = await fetchAllSpotterDataWithRetries<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
+    const leadMap = new Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>();
+    for (const lead of leads) {
+        leadMap.set(lead.id, {
+            leadName: lead.lead,
+            organizationId: lead.organizationId,
+            sourceValue: lead.source?.value,
+        });
+    }
+    return leadMap;
+}
+
+async function fetchAllOrganizations(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, string>> {
+    const orgs = await fetchAllSpotterDataWithRetries<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
+    const orgMap = new Map<number, string>();
+    for (const org of orgs) {
+        if (org.name) {
+            orgMap.set(org.id, org.name);
+        }
+    }
+    return orgMap;
 }
 
 async function fetchAllLeadsSold(token: string, baseUrl: string, log: LogCallback): Promise<SpotterSale[]> {
   return fetchAllSpotterDataWithRetries<SpotterSale>(`${baseUrl}/v3/LeadsSold`, token, log);
 }
 
+function normalizeDiscountType(type: string | null | undefined): string {
+    if (!type) return 'Nenhum';
+    const lowerType = type.toLowerCase();
+    if (lowerType.includes('absoluto')) return 'Absoluto';
+    if (lowerType.includes('percentual')) return 'Porcentual';
+    return type; // Return original if not recognized
+}
+
 function buildDealsAndLineItemsRows(
   leadsSold: SpotterSale[],
-  leadsById: Map<number, { sourceValue?: string }>,
+  leadMap: Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>,
+  orgMap: Map<number, string>,
   logObject: LogObject
 ): HubSpotDealLineItemRow[] {
   const rows: HubSpotDealLineItemRow[] = [];
@@ -218,33 +213,42 @@ function buildDealsAndLineItemsRows(
       continue;
     }
 
-    const saleStage = sale.saleStage ?? '';
-    const dealStage = HUBSPOT_DEALSTAGE_MAP[saleStage] ?? DEFAULT_DEAL_STAGE;
-    if (!HUBSPOT_DEALSTAGE_MAP[saleStage]) {
-      logObject.warnings.push({
-        message: `Unmapped saleStage "${saleStage}". Falling back to default: "${DEFAULT_DEAL_STAGE}".`,
-        data: { saleId: sale.id, saleStage },
-      });
+    const primaryProduct = products[0];
+    const primaryProductName = primaryProduct?.name?.replace(/[\r\n]/g, ' ') ||
+                               (primaryProduct?.id ? `Produto Spotter ${primaryProduct.id}` : "Produto Spotter");
+
+    const leadInfo = leadMap.get(sale.leadId);
+    const companyName = leadInfo?.organizationId ? orgMap.get(leadInfo.organizationId) : undefined;
+    const leadName = leadInfo?.leadName?.replace(/[\r\n]/g, ' ');
+
+    let dealName = '';
+    if (companyName) {
+        dealName = `${companyName} - ${primaryProductName}`;
+    } else if (leadName) {
+        dealName = `${leadName} - ${primaryProductName}`;
+    } else {
+        dealName = `Lead ${sale.leadId} - ${primaryProductName}`;
     }
 
     const dealData = {
-      'Nome do negócio': `${sale.leadId} - Venda Spotter #${sale.id}`,
+      'Nome do negócio': dealName,
       'Pipeline': HUBSPOT_PIPELINE,
-      'Etapa do negócio': dealStage,
+      'Etapa do negócio': HUBSPOT_DEAL_STAGE_SOLD,
       'spotter_lead_id': String(sale.leadId),
       'spotter_sale_id': String(sale.id),
       'spotter_sale_date': formatDateBR(sale.saleDate),
-      'spotter_sale_stage': saleStage,
+      'spotter_sale_stage': sale.saleStage ?? '',
       'spotter_cycle': String(sale.cycle ?? ''),
       'spotter_total_deal_value': String(sale.totalDealValue ?? 0),
       'spotter_salesrep_email': sale.salesRep?.email ?? '',
       'spotter_presales_email': sale.preSales?.email ?? '',
-      'origem_comercial_real': leadsById.get(sale.leadId)?.sourceValue ?? '',
+      'origem_comercial_real': leadInfo?.sourceValue ?? '',
     };
 
     for (const product of products) {
-      const name = product.name ?? 'Produto sem nome';
-      const quantity = product.quantity ?? 1;
+      const name = product.name?.replace(/[\r\n]/g, ' ') ?? 'Produto sem nome';
+      const quantityNum = Number(product.quantity ?? 1);
+      const quantity = Number.isFinite(quantityNum) && quantityNum > 0 ? quantityNum : 1;
       const unitPrice = product.individualValue ?? product.fullValue ?? 0;
 
       if (!name || name === 'Produto sem nome') {
@@ -280,6 +284,7 @@ export async function exportDealsAndLineItemsToCsv(
 ): Promise<{ csvContent: string }> {
   const logObject: LogObject = {
     totalLeadsFetched: 0,
+    totalOrgsFetched: 0,
     totalSalesFetched: 0,
     totalRowsGenerated: 0,
     warnings: [],
@@ -288,18 +293,23 @@ export async function exportDealsAndLineItemsToCsv(
   };
 
   try {
-    log('Fetching Leads from /v3/Leads to enrich source data...');
-    const leadsById = await fetchAllLeads(token, baseUrl, log);
-    logObject.totalLeadsFetched = leadsById.size;
-    log(`Fetched ${leadsById.size} unique leads.`);
+    log('Fetching Leads from /v3/Leads...');
+    const leadMap = await fetchAllLeads(token, baseUrl, log);
+    logObject.totalLeadsFetched = leadMap.size;
+    log(`Fetched ${leadMap.size} unique leads.`);
+
+    log('Fetching Organizations from /v3/organization...');
+    const orgMap = await fetchAllOrganizations(token, baseUrl, log);
+    logObject.totalOrgsFetched = orgMap.size;
+    log(`Fetched ${orgMap.size} unique organizations.`);
 
     log('Fetching sales data from /v3/LeadsSold...');
     const leadsSold = await fetchAllLeadsSold(token, baseUrl, log);
     logObject.totalSalesFetched = leadsSold.length;
     log(`Fetched ${leadsSold.length} sales records.`);
 
-    log('Building CSV rows and exploding line items...');
-    const rows = buildDealsAndLineItemsRows(leadsSold, leadsById, logObject);
+    log('Building CSV rows...');
+    const rows = buildDealsAndLineItemsRows(leadsSold, leadMap, orgMap, logObject);
     logObject.totalRowsGenerated = rows.length;
     log(`Generated ${rows.length} CSV rows.`);
 
@@ -316,7 +326,6 @@ export async function exportDealsAndLineItemsToCsv(
 
     const csvContent = buildCsv(headers, csvRows);
     log(`CSV generation complete. Total warnings: ${logObject.warnings.length}.`);
-    log(`Final message: Exportação concluída: ${logObject.totalSalesFetched} negócios, ${logObject.totalRowsGenerated} itens de linha, arquivo pronto para import no HubSpot.`);
 
     await writeLogFile(logObject);
     return { csvContent };
@@ -325,7 +334,7 @@ export async function exportDealsAndLineItemsToCsv(
     log(`FATAL ERROR: ${errorMessage}`);
     logObject.errors.push({ message: errorMessage, details: error });
     await writeLogFile(logObject);
-    throw error; // Re-throw to be caught by the API route
+    throw error;
   }
 }
 
