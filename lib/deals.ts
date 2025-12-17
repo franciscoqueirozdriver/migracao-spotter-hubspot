@@ -36,13 +36,11 @@ export interface SpotterLead {
   source?: { value?: string };
 }
 
-export interface SpotterLeadsAndPersons {
-  id: number; // leadId
-  persons?: {
-    id: number;
-    email?: string;
-    mainContact?: boolean;
-  }[];
+export interface SpotterPerson {
+  id: number;
+  name?: string;
+  mainContact?: boolean;
+  leadId?: number;
 }
 
 // HubSpot CSV Row Interface
@@ -73,12 +71,12 @@ export interface HubSpotDealLineItemRow {
 // Log object
 type LogObject = {
   totalLeadsFetched: number;
-  totalLeadsAndPersonsFetched: number;
+  totalPersonsFetched: number;
   totalSalesFetched: number;
   totalRowsGenerated: number;
   warnings: { message: string; data?: unknown }[];
   errors: { message: string; details: unknown }[];
-  csvSample: HubSpotDealLineItemRow[];
+  csvSample: Record<string, string>[];
 };
 //endregion
 
@@ -133,24 +131,34 @@ async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): 
   return map;
 }
 
-async function fetchAllLeadsAndPersons(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, number | undefined>> {
-  const leadsAndPersons = await fetchAllSpotterOData<SpotterLeadsAndPersons>(`${baseUrl}/v3/LeadsAndPersons`, token, log);
-  const map = new Map<number, number | undefined>();
-  for (const item of leadsAndPersons) {
-    const persons = item.persons ?? [];
-    const mainContact = persons.find(p => p.mainContact === true);
-    const primaryPerson = mainContact ?? persons[0];
-    map.set(item.id, primaryPerson?.id);
+async function fetchAllPersons(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, number | undefined>> {
+  const persons = await fetchAllSpotterOData<SpotterPerson>(`${baseUrl}/v3/Persons/`, token, log);
+  const personsByLead = new Map<number, SpotterPerson[]>();
+
+  for (const person of persons) {
+    if (person.leadId) {
+      if (!personsByLead.has(person.leadId)) {
+        personsByLead.set(person.leadId, []);
+      }
+      personsByLead.get(person.leadId)!.push(person);
+    }
   }
-  return map;
+
+  const mainPersonByLeadId = new Map<number, number | undefined>();
+  personsByLead.forEach((personList, leadId) => {
+    const mainContact = personList.find(p => p.mainContact === true);
+    const primaryPerson = mainContact ?? personList[0];
+    mainPersonByLeadId.set(leadId, primaryPerson?.id);
+  });
+  return mainPersonByLeadId;
 }
 //endregion
 
 //region CSV Generation Logic
-function buildDealsAndLineItemsRows(
+function buildDefaultRows(
   leadsSold: SpotterLeadSold[],
   leadsById: Map<number, SpotterLead>,
-  primaryPersonIdByLead: Map<number, number | undefined>,
+  mainPersonByLeadId: Map<number, number | undefined>,
   logObject: LogObject
 ): HubSpotDealLineItemRow[] {
   const rows: HubSpotDealLineItemRow[] = [];
@@ -173,8 +181,8 @@ function buildDealsAndLineItemsRows(
         logObject.warnings.push({ message: `Lead ${lead.id} não possui organizationId.`, data: lead });
     }
 
-    const spotter_person_id = primaryPersonIdByLead.get(sale.leadId) ?? '';
-     if (!spotter_person_id) {
+    const spotter_person_id = mainPersonByLeadId.get(sale.leadId) ?? '';
+    if (!spotter_person_id) {
         logObject.warnings.push({ message: `Lead ${lead.id} não possui contato primário.`, data: lead });
     }
 
@@ -183,9 +191,11 @@ function buildDealsAndLineItemsRows(
         logObject.warnings.push({ message: `Origem "${lead.source.value}" mapeada para Inbound (default).`, data: lead });
     }
 
-    for (const product of products) {
-      const dealName = `${lead.lead ?? '(sem nome)'} - ${product.name ?? '(sem produto)'}`;
+    const primaryProduct = products[0];
+    const primaryProductName = primaryProduct?.name ?? `Produto ${primaryProduct.id}`;
+    const dealName = `${lead.lead ?? '(sem nome)'} - ${primaryProductName}`;
 
+    for (const product of products) {
       const row: HubSpotDealLineItemRow = {
         'Nome do negócio': dealName,
         'Pipeline': 'default',
@@ -214,6 +224,76 @@ function buildDealsAndLineItemsRows(
   }
   return rows;
 }
+
+function buildHubSpotTemplateRows(
+  leadsSold: SpotterLeadSold[],
+  leadsById: Map<number, SpotterLead>,
+  mainPersonByLeadId: Map<number, number | undefined>,
+  logObject: LogObject
+): Record<string, string>[] {
+  const rows: Record<string, string>[] = [];
+
+  for (const sale of leadsSold) {
+    const lead = leadsById.get(sale.leadId);
+    if (!lead) {
+      logObject.warnings.push({ message: `Lead com ID ${sale.leadId} não encontrado. Venda ${sale.id} será pulada.`, data: sale });
+      continue;
+    }
+
+    const products = sale.products ?? [];
+    if (products.length === 0) {
+      logObject.warnings.push({ message: `Venda ${sale.id} não possui produtos e será pulada.`, data: sale });
+      continue;
+    }
+
+    const spotter_organization_id = lead.organizationId ?? '';
+    if (!spotter_organization_id) {
+        logObject.warnings.push({ message: `Lead ${lead.id} não possui organizationId.`, data: lead });
+    }
+
+    const spotter_person_id = mainPersonByLeadId.get(sale.leadId) ?? '';
+    if (!spotter_person_id) {
+        logObject.warnings.push({ message: `Lead ${lead.id} não possui contato primário.`, data: lead });
+    }
+
+    let origem = mapOrigemComercialReal(lead.source?.value);
+    if (origem === 'Inbound' && lead.source?.value) {
+        logObject.warnings.push({ message: `Origem "${lead.source.value}" mapeada para Inbound (default).`, data: lead });
+    }
+
+    const primaryProduct = products[0];
+    const primaryProductName = primaryProduct?.name ?? `Produto ${primaryProduct.id}`;
+    const dealName = `${lead.lead ?? '(sem nome)'} - ${primaryProductName}`;
+
+    for (const product of products) {
+      const row: Record<string, string> = {
+        'Nome do negócio': dealName,
+        'Pipeline': 'default',
+        'Etapa do negócio': 'Vendido',
+        'spotter_sale_id': String(sale.id),
+        'spotter_lead_id': String(sale.leadId),
+        'spotter_sale_date': formatDateBR(sale.saleDate),
+        'spotter_sale_stage': sale.saleStage ?? '',
+        'spotter_cycle': String(sale.cycle ?? ''),
+        'spotter_total_deal_value': String(sale.totalDealValue ?? 0),
+        'spotter_salesrep_email': sale.salesRep?.email ?? '',
+        'spotter_presales_email': sale.preSales?.email ?? '',
+        'origem_comercial_real': origem,
+        'spotter_organization_id': String(spotter_organization_id),
+        'spotter_person_id': String(spotter_person_id),
+        'Nome <LINE_ITEM name>': product.name ?? '',
+        'Quantidade <LINE_ITEM quantity>': String(product.quantity ?? 1),
+        'Preço unitário <LINE_ITEM price>': String(product.individualValue ?? 0),
+        'spotter_product_id': String(product.id),
+        'spotter_discount_amount': String(product.discountAmount ?? 0),
+        'spotter_discount_type': normalizeDiscountType(product.discountType),
+        'spotter_final_value': String(product.finalValue ?? 0),
+      };
+      rows.push(row);
+    }
+  }
+  return rows;
+}
 //endregion
 
 //region Main Export Orchestrator
@@ -224,7 +304,7 @@ export async function exportDealsAndLineItemsToCsv(
 ): Promise<{ csvContent: string }> {
   const logObject: LogObject = {
     totalLeadsFetched: 0,
-    totalLeadsAndPersonsFetched: 0,
+    totalPersonsFetched: 0,
     totalSalesFetched: 0,
     totalRowsGenerated: 0,
     warnings: [],
@@ -238,10 +318,10 @@ export async function exportDealsAndLineItemsToCsv(
     logObject.totalLeadsFetched = leadsById.size;
     log(`Leads carregados: ${leadsById.size}`);
 
-    log('Carregando leads e pessoas...');
-    const primaryPersonIdByLead = await fetchAllLeadsAndPersons(token, baseUrl, log);
-    logObject.totalLeadsAndPersonsFetched = primaryPersonIdByLead.size;
-    log(`Leads e pessoas carregados: ${primaryPersonIdByLead.size}`);
+    log('Carregando pessoas...');
+    const mainPersonByLeadId = await fetchAllPersons(token, baseUrl, log);
+    logObject.totalPersonsFetched = mainPersonByLeadId.size;
+    log(`Pessoas carregadas: ${mainPersonByLeadId.size}`);
 
     log('Carregando vendas...');
     const leadsSold = await fetchAllLeadsSold(token, baseUrl, log);
@@ -249,7 +329,10 @@ export async function exportDealsAndLineItemsToCsv(
     log(`Vendas carregadas: ${leadsSold.length}`);
 
     log('Gerando CSV...');
-    const rows = buildDealsAndLineItemsRows(leadsSold, leadsById, primaryPersonIdByLead, logObject);
+    const useHubSpotHeaders = process.env.HUBSPOT_TEMPLATE_HEADERS === 'true';
+    const rows = useHubSpotHeaders
+      ? buildHubSpotTemplateRows(leadsSold, leadsById, mainPersonByLeadId, logObject)
+      : buildDefaultRows(leadsSold, leadsById, mainPersonByLeadId, logObject);
     logObject.totalRowsGenerated = rows.length;
     log(`CSV gerado com ${rows.length} linhas.`);
 
@@ -259,9 +342,9 @@ export async function exportDealsAndLineItemsToCsv(
       return { csvContent: '' };
     }
 
-    logObject.csvSample = rows.slice(0, 3);
-    const headers = Object.keys(rows[0]) as (keyof HubSpotDealLineItemRow)[];
-    const csvRows = rows.map(row => headers.map(header => sanitizeCsvValue(row[header])));
+    logObject.csvSample = rows.slice(0, 3) as any[];
+    const headers = Object.keys(rows[0]);
+    const csvRows = rows.map(row => headers.map(header => sanitizeCsvValue((row as Record<string,string>)[header])));
 
     const csvContent = buildCsv(headers, csvRows);
 
