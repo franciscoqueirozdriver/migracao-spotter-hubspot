@@ -49,44 +49,48 @@ export interface SpotterSale {
 
 export interface SpotterLead {
   id: number;
-  lead?: string; // This is the lead name
-  organizationId?: number | null;
+  lead?: string;
+  website?: string;
   source?: { value?: string };
 }
 
-export interface SpotterOrganization {
-    id: number;
-    name?: string;
+// Simplified index type
+export interface LeadIndex {
+  leadName: string;
+  companyDomain: string;
+  contactEmail: string; // Will be empty as per requirements
+  origem: string;
 }
 
 // HubSpot CSV Row Interface
 export interface HubSpotDealLineItemRow {
-    'Nome do negócio': string;
-    'Pipeline': string;
-    'Etapa do negócio': string;
-    'Nome': string; // Line Item Name
-    'Preço unitário': string;
-    'Quantidade': string;
-    'spotter_lead_id': string;
-    'spotter_sale_id': string;
-    'spotter_sale_date': string;
-    'spotter_sale_stage': string;
-    'spotter_cycle': string;
-    'spotter_total_deal_value': string;
-    'spotter_salesrep_email': string;
-    'spotter_presales_email': string;
-    'origem_comercial_real': string;
-    'spotter_product_id': string;
-    'spotter_individual_value': string;
-    'spotter_discount_amount': string;
-    'spotter_discount_type': string;
-    'spotter_final_value': string;
+  'Nome do negócio': string;
+  'Pipeline': string;
+  'Etapa do negócio': string;
+  'spotter_sale_id': string;
+  'spotter_lead_id': string;
+  'spotter_sale_date': string;
+  'spotter_sale_stage': string;
+  'spotter_cycle': string;
+  'spotter_total_deal_value': string;
+  'spotter_salesrep_email': string;
+  'spotter_presales_email': string;
+  'origem_comercial_real': string;
+  'contact_email': string;
+  'company_domain': string;
+  'Nome': string; // Line Item Name
+  'Quantidade': string;
+  'Preço unitário': string;
+  'spotter_product_id': string;
+  'spotter_individual_value': string;
+  'spotter_discount_amount': string;
+  'spotter_discount_type': string;
+  'spotter_final_value': string;
 }
 
 // Log object for the JSON file
 type LogObject = {
   totalLeadsFetched: number;
-  totalOrgsFetched: number;
   totalSalesFetched: number;
   totalRowsGenerated: number;
   warnings: { message: string; data: unknown }[];
@@ -159,32 +163,40 @@ function formatDateBR(isoString: string | null | undefined): string {
 //endregion
 
 //region Data Fetching and Processing
-async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>> {
-    const leads = await fetchAllSpotterDataWithRetries<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
-    const leadMap = new Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>();
-    for (const lead of leads) {
-        leadMap.set(lead.id, {
-            leadName: lead.lead,
-            organizationId: lead.organizationId,
-            sourceValue: lead.source?.value,
-        });
-    }
-    return leadMap;
-}
+async function fetchAndBuildLeadIndex(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, LeadIndex>> {
+  log('Carregando leads para índice...');
+  const leads = await fetchAllSpotterDataWithRetries<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
+  log(`Leads carregados: ${leads.length}`);
+  log('Aviso: contact_email não disponível via /Leads; coluna gerada vazia.');
 
-async function fetchAllOrganizations(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, string>> {
-    const orgs = await fetchAllSpotterDataWithRetries<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
-    const orgMap = new Map<number, string>();
-    for (const org of orgs) {
-        if (org.name) {
-            orgMap.set(org.id, org.name);
-        }
+  const leadIndexMap = new Map<number, LeadIndex>();
+  for (const lead of leads) {
+    let companyDomain = '';
+    if (lead.website) {
+      try {
+        const url = new URL(lead.website);
+        companyDomain = url.hostname.replace(/^www\./, '');
+      } catch {
+        // Handle invalid URLs gracefully
+        companyDomain = lead.website.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+      }
     }
-    return orgMap;
+
+    leadIndexMap.set(lead.id, {
+      leadName: lead.lead ?? '',
+      companyDomain,
+      contactEmail: '', // As per requirement, this is empty for now
+      origem: lead.source?.value ?? '',
+    });
+  }
+  return leadIndexMap;
 }
 
 async function fetchAllLeadsSold(token: string, baseUrl: string, log: LogCallback): Promise<SpotterSale[]> {
-  return fetchAllSpotterDataWithRetries<SpotterSale>(`${baseUrl}/v3/LeadsSold`, token, log);
+    log('Carregando vendas (LeadsSold)...');
+    const sales = await fetchAllSpotterDataWithRetries<SpotterSale>(`${baseUrl}/v3/LeadsSold`, token, log);
+    log(`Vendas carregadas: ${sales.length}`);
+    return sales;
 }
 
 function normalizeDiscountType(type: string | null | undefined): string {
@@ -197,8 +209,7 @@ function normalizeDiscountType(type: string | null | undefined): string {
 
 function buildDealsAndLineItemsRows(
   leadsSold: SpotterSale[],
-  leadMap: Map<number, { leadName?: string; organizationId?: number | null; sourceValue?: string }>,
-  orgMap: Map<number, string>,
+  leadIndexMap: Map<number, LeadIndex>,
   logObject: LogObject
 ): HubSpotDealLineItemRow[] {
   const rows: HubSpotDealLineItemRow[] = [];
@@ -213,36 +224,27 @@ function buildDealsAndLineItemsRows(
       continue;
     }
 
+    const leadInfo = leadIndexMap.get(sale.leadId);
     const primaryProduct = products[0];
-    const primaryProductName = primaryProduct?.name?.replace(/[\r\n]/g, ' ') ||
-                               (primaryProduct?.id ? `Produto Spotter ${primaryProduct.id}` : "Produto Spotter");
-
-    const leadInfo = leadMap.get(sale.leadId);
-    const companyName = leadInfo?.organizationId ? orgMap.get(leadInfo.organizationId) : undefined;
-    const leadName = leadInfo?.leadName?.replace(/[\r\n]/g, ' ');
-
-    let dealName = '';
-    if (companyName) {
-        dealName = `${companyName} - ${primaryProductName}`;
-    } else if (leadName) {
-        dealName = `${leadName} - ${primaryProductName}`;
-    } else {
-        dealName = `Lead ${sale.leadId} - ${primaryProductName}`;
-    }
+    const primaryProductName = primaryProduct?.name ?? `Produto ${primaryProduct.id}`;
+    const leadName = leadInfo?.leadName || `Lead ${sale.leadId}`;
+    const dealName = `${leadName} - ${primaryProductName}`;
 
     const dealData = {
-      'Nome do negócio': dealName,
+      'Nome do negócio': dealName, // Use the same dealName for all line items
       'Pipeline': HUBSPOT_PIPELINE,
       'Etapa do negócio': HUBSPOT_DEAL_STAGE_SOLD,
-      'spotter_lead_id': String(sale.leadId),
       'spotter_sale_id': String(sale.id),
+      'spotter_lead_id': String(sale.leadId),
       'spotter_sale_date': formatDateBR(sale.saleDate),
       'spotter_sale_stage': sale.saleStage ?? '',
       'spotter_cycle': String(sale.cycle ?? ''),
       'spotter_total_deal_value': String(sale.totalDealValue ?? 0),
       'spotter_salesrep_email': sale.salesRep?.email ?? '',
       'spotter_presales_email': sale.preSales?.email ?? '',
-      'origem_comercial_real': leadInfo?.sourceValue ?? '',
+      'origem_comercial_real': leadInfo?.origem ?? '',
+      'contact_email': leadInfo?.contactEmail ?? '',
+      'company_domain': leadInfo?.companyDomain ?? '',
     };
 
     for (const product of products) {
@@ -282,9 +284,9 @@ export async function exportDealsAndLineItemsToCsv(
   baseUrl: string,
   log: LogCallback
 ): Promise<{ csvContent: string }> {
+  log('Iniciando exportação...');
   const logObject: LogObject = {
     totalLeadsFetched: 0,
-    totalOrgsFetched: 0,
     totalSalesFetched: 0,
     totalRowsGenerated: 0,
     warnings: [],
@@ -293,25 +295,16 @@ export async function exportDealsAndLineItemsToCsv(
   };
 
   try {
-    log('Fetching Leads from /v3/Leads...');
-    const leadMap = await fetchAllLeads(token, baseUrl, log);
-    logObject.totalLeadsFetched = leadMap.size;
-    log(`Fetched ${leadMap.size} unique leads.`);
+    const leadIndexMap = await fetchAndBuildLeadIndex(token, baseUrl, log);
+    logObject.totalLeadsFetched = leadIndexMap.size;
 
-    log('Fetching Organizations from /v3/organization...');
-    const orgMap = await fetchAllOrganizations(token, baseUrl, log);
-    logObject.totalOrgsFetched = orgMap.size;
-    log(`Fetched ${orgMap.size} unique organizations.`);
-
-    log('Fetching sales data from /v3/LeadsSold...');
     const leadsSold = await fetchAllLeadsSold(token, baseUrl, log);
     logObject.totalSalesFetched = leadsSold.length;
-    log(`Fetched ${leadsSold.length} sales records.`);
 
-    log('Building CSV rows...');
-    const rows = buildDealsAndLineItemsRows(leadsSold, leadMap, orgMap, logObject);
+    log('Gerando CSV...');
+    const rows = buildDealsAndLineItemsRows(leadsSold, leadIndexMap, logObject);
     logObject.totalRowsGenerated = rows.length;
-    log(`Generated ${rows.length} CSV rows.`);
+    log(`CSV gerado com ${rows.length} linhas.`);
 
     if (rows.length === 0) {
       log('No valid rows were generated. The CSV will be empty.');
