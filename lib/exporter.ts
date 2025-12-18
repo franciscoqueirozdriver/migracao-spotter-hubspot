@@ -2,20 +2,18 @@
 import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
 import { v4 as uuidv4 } from 'uuid';
-import { saveExport } from './exportStorage';
+import { saveTemporaryFile } from './exportStorage';
 import JSZip from 'jszip';
 
 //region Type Definitions
 export type LogCallback = (message: string) => void;
-export type ExportMode = 'sold'; // For now, only 'sold' is fully specified
+export type ExportMode = 'sold';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 
 // Spotter API Interfaces
 interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: SpotterProduct[] }
 interface SpotterProduct { id: number; name?: string; quantity?: number; individualValue?: number; }
-interface SpotterLead { id: number; lead?: string; organizationId?: number; source?: { value?: string }; }
-interface SpotterLeadAndPerson { id: number; lead?: string; organizationId?: number; source?: { value?: string }; persons?: SpotterPerson[] }
-interface SpotterOrganization { id: number; name?: string; website?: string; socialCnpj?: string; address?: string; addressNumber?: string; addressComplement?: string; district?: string; postalCode?: string; city?: string; state?: string; country?: string; }
+interface SpotterLead { id: number; lead?: string; organizationId?: number; website?: string; cnpj?: string; street?: string; number?: string; complement?: string; district?: string; cep?: string; city?: string; state?: string; country?: string; source?: { value?: string }; }
 interface SpotterPerson { id: number; name?: string; leadId?: number; mainContact?: boolean; role?: string; emails?: { address?: string }[]; phones?: { number?: string }[]; social?: { platform?: string; id?: string }[]; }
 //endregion
 
@@ -29,7 +27,15 @@ const HEADERS = {
 
 //region --- UTILITY & HELPER FUNCTIONS ---
 const formatDate = (iso?: string) => iso ? new Date(iso).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : '';
-const mapOrigem = (val?: string) => (val?.toLowerCase().includes('prospeccao ativa') ? 'Outbound' : 'Inbound');
+const normalizeDomain = (url?: string) => {
+    if (!url) return '';
+    try {
+        const domain = new URL(url).hostname;
+        return domain.startsWith('www.') ? domain.slice(4) : domain;
+    } catch {
+        return url; // Return original string if it's not a valid URL
+    }
+};
 const splitName = (name = '') => {
     const parts = name.trim().split(/\s+/);
     return { firstName: parts.shift() || '', lastName: parts.join(' ') || '-' };
@@ -38,100 +44,124 @@ const splitName = (name = '') => {
 
 //region --- DATA FETCHING ---
 const fetchLeadsSold = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterLeadSold>(`${baseUrl}/v3/LeadsSold`, token, log);
-const fetchLeadsAndPersons = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterLeadAndPerson>(`${baseUrl}/v3/LeadsAndPersons`, token, log);
-const fetchOrganizations = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
+const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
+const fetchPersons = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterPerson>(`${baseUrl}/v3/Persons/`, token, log);
 //endregion
 
 //region --- CSV GENERATION ---
 
-// A) Companies
-async function generateCompaniesCsv(soldOrgIds: Set<number>, token: string, baseUrl: string, log: LogCallback) {
-    log('Filtrando empresas vendidas...');
-    const allOrgs = await fetchOrganizations(token, baseUrl, log);
-    const soldOrgs = allOrgs.filter(org => soldOrgIds.has(org.id));
-    log(`Encontradas ${soldOrgs.length} empresas correspondentes.`);
+// A) Companies from Leads
+async function generateCompaniesCsv(soldLeadIds: Set<number>, token: string, baseUrl: string, log: LogCallback) {
+    log('Buscando todos os leads para filtrar empresas vendidas...');
+    const allLeads = await fetchLeads(token, baseUrl, log);
+    const soldLeads = allLeads.filter(lead => soldLeadIds.has(lead.id));
+    log(`Encontrados ${soldLeads.length} leads correspondentes a vendas.`);
 
     const validRows: any[] = [];
     const rejectedRows: any[] = [];
 
-    for (const org of soldOrgs) {
+    for (const lead of soldLeads) {
+        let spotter_organization_id = lead.organizationId;
+        if (!spotter_organization_id) {
+            log(`Aviso: organizationId ausente para o lead ${lead.id}. Usando lead.id como fallback.`);
+            spotter_organization_id = lead.id;
+        }
+
         const row = {
-            'Nome da empresa': org.name, 'Nome de domínio da empresa': org.website, 'CNPJ': org.socialCnpj,
-            'Endereço': org.address, 'Número': org.addressNumber, 'Complemento': org.addressComplement,
-            'Bairro': org.district, 'Código postal': org.postalCode, 'Cidade': org.city,
-            'Estado/Região': org.state, 'País/Região': org.country, 'spotter_organization_id': org.id
+            'Nome da empresa': lead.lead,
+            'Nome de domínio da empresa': normalizeDomain(lead.website),
+            'CNPJ': lead.cnpj,
+            'Endereço': lead.street, 'Número': lead.number, 'Complemento': lead.complement,
+            'Bairro': lead.district, 'Código postal': lead.cep, 'Cidade': lead.city,
+            'Estado/Região': lead.state, 'País/Região': lead.country,
+            'spotter_organization_id': spotter_organization_id
         };
 
-        // Quality Rule
-        if (!row.spotter_organization_id) {
+        if (!row.spotter_organization_id) { // Should not happen with the fallback
             rejectedRows.push({ ...row, rejection_reason: 'missing_spotter_organization_id' });
         } else {
             validRows.push(row);
         }
     }
-    return {
-        valid: buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h])))),
-        rejected: rejectedRows.length ? buildCsv([...HEADERS.COMPANIES, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.COMPANIES, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '',
-        counts: { exported: validRows.length, rejected: rejectedRows.length }
-    };
+
+    const validCsv = buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
+    const rejectedCsv = rejectedRows.length ? buildCsv([...HEADERS.COMPANIES, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.COMPANIES, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '';
+
+    return { valid: validCsv, rejected: rejectedCsv, counts: { exported: validRows.length, rejected: rejectedRows.length } };
 }
 
 // B) Contacts
-function generateContactsCsv(soldLeads: Map<number, SpotterLeadAndPerson>, log: LogCallback) {
-    log('Gerando CSV de contatos...');
+async function generateContactsCsv(soldLeadIds: Set<number>, token: string, baseUrl: string, log: LogCallback) {
+    log('Buscando todas as pessoas para filtrar contatos vendidos...');
+    const allPersons = await fetchPersons(token, baseUrl, log);
+    const soldPersons = allPersons.filter(person => person.leadId && soldLeadIds.has(person.leadId));
+    log(`Encontrados ${soldPersons.length} contatos correspondentes a vendas.`);
+
     const validRows: any[] = [];
     const rejectedRows: any[] = [];
 
-    soldLeads.forEach(lead => {
-        (lead.persons ?? []).forEach(person => {
-            const { firstName, lastName } = splitName(person.name);
-            const phone1 = person.phones?.[0]?.number;
-            const phone2 = person.phones?.[1]?.number;
-            const social = person.social?.[0];
-            const row = {
-                'E-mail': person.emails?.[0]?.address, 'Nome': firstName, 'Sobrenome': lastName, 'Cargo': person.role,
-                'Telefone': phone1, 'Telefone 2': phone2, 'spotter_person_id': person.id, 'spotter_lead_id': person.leadId,
-                'spotter_main_contact': person.mainContact, 'spotter_messaging_platform': social?.platform, 'spotter_messaging_id': social?.id,
-            };
-            // Quality Rule
-            if (!row.spotter_person_id || !row.spotter_lead_id) {
-                rejectedRows.push({ ...row, rejection_reason: 'missing_person_or_lead_id' });
-            } else {
-                validRows.push(row);
-            }
-        });
-    });
-    return {
-        valid: buildCsv(HEADERS.CONTACTS, validRows.map(row => HEADERS.CONTACTS.map(h => sanitizeCsvValue(row[h])))),
-        rejected: rejectedRows.length ? buildCsv([...HEADERS.CONTACTS, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.CONTACTS, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '',
-        counts: { exported: validRows.length, rejected: rejectedRows.length }
-    };
+    for (const person of soldPersons) {
+        const { firstName, lastName } = splitName(person.name);
+        const row = {
+            'E-mail': person.emails?.[0]?.address, 'Nome': firstName, 'Sobrenome': lastName, 'Cargo': person.role,
+            'Telefone': person.phones?.[0]?.number, 'Telefone 2': person.phones?.[1]?.number,
+            'spotter_person_id': person.id, 'spotter_lead_id': person.leadId,
+            'spotter_main_contact': person.mainContact,
+            'spotter_messaging_platform': person.social?.[0]?.platform, 'spotter_messaging_id': person.social?.[0]?.id,
+        };
+        if (!row.spotter_person_id || !row.spotter_lead_id) {
+            rejectedRows.push({ ...row, rejection_reason: 'missing_person_or_lead_id' });
+        } else {
+            validRows.push(row);
+        }
+    }
+
+    const validCsv = buildCsv(HEADERS.CONTACTS, validRows.map(row => HEADERS.CONTACTS.map(h => sanitizeCsvValue(row[h]))));
+    const rejectedCsv = rejectedRows.length ? buildCsv([...HEADERS.CONTACTS, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.CONTACTS, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '';
+
+    return { valid: validCsv, rejected: rejectedCsv, counts: { exported: validRows.length, rejected: rejectedRows.length } };
 }
 
 // C) Deals + Line Items
-function generateDealsLineItemsCsv(sales: SpotterLeadSold[], leadsMap: Map<number, SpotterLeadAndPerson>, log: LogCallback) {
-    log('Gerando CSV de negócios e itens de linha...');
+async function generateDealsLineItemsCsv(sales: SpotterLeadSold[], token: string, baseUrl: string, log: LogCallback) {
+    log('Buscando dados de leads e pessoas para enriquecer negócios...');
+    const leadIds = new Set(sales.map(s => s.leadId));
+    const allLeads = await fetchLeads(token, baseUrl, log);
+    const allPersons = await fetchPersons(token, baseUrl, log);
+
+    const leadsMap = new Map(allLeads.filter(l => leadIds.has(l.id)).map(l => [l.id, l]));
+    const personsMap = new Map<number, SpotterPerson[]>();
+    allPersons.forEach(p => {
+        if (p.leadId && leadIds.has(p.leadId)) {
+            if (!personsMap.has(p.leadId)) personsMap.set(p.leadId, []);
+            personsMap.get(p.leadId)!.push(p);
+        }
+    });
+
     const validRows: any[] = [];
     const rejectedRows: any[] = [];
 
     for (const sale of sales) {
         const lead = leadsMap.get(sale.leadId);
-        const persons = lead?.persons ?? [];
+        const persons = personsMap.get(sale.leadId) ?? [];
         const mainContact = persons.find(p => p.mainContact) ?? persons.find(p => p.emails?.[0]?.address) ?? persons[0];
 
-        (sale.products ?? [{ id: 0 }]).forEach(product => { // Ensure at least one line per sale
+        (sale.products ?? [{id: 0}]).forEach(product => {
             const row = {
                 'Nome do negócio': `${lead?.lead ?? 'Lead'} - ${product.name ?? 'Produto'}`,
-                'Pipeline': 'default', 'Etapa do negócio': 'Vendido', 'spotter_sale_id': sale.id, 'spotter_lead_id': sale.leadId,
-                'spotter_sale_date': formatDate(sale.saleDate), 'origem_comercial_real': mapOrigem(lead?.source?.value),
-                'spotter_organization_id': lead?.organizationId, 'spotter_person_id': mainContact?.id,
-                'Nome': product.name, 'Quantidade': product.quantity, 'Preço unitário': product.individualValue, 'spotter_product_id': product.id,
-                // Empty fields as per spec
+                'Pipeline': 'default', 'Etapa do negócio': 'Vendido',
+                'spotter_sale_id': sale.id, 'spotter_lead_id': sale.leadId,
+                'spotter_sale_date': formatDate(sale.saleDate),
+                'origem_comercial_real': lead?.source?.value,
+                'spotter_organization_id': lead?.organizationId ?? lead?.id,
+                'spotter_person_id': mainContact?.id,
+                'Nome': product.name, 'Quantidade': product.quantity, 'Preço unitário': product.individualValue,
+                'spotter_product_id': product.id,
+                // Empty fields
                 'spotter_sale_stage': '', 'spotter_cycle': '', 'spotter_total_deal_value': '', 'spotter_salesrep_email': '',
                 'spotter_presales_email': '', 'spotter_discount_amount': '', 'spotter_discount_type': '', 'spotter_final_value': '',
             };
 
-            // Quality Rule
             const required = [row.spotter_sale_id, row.spotter_lead_id, row.Nome, row.Quantidade, row['Preço unitário'], row.spotter_product_id];
             if (required.some(val => val === null || val === undefined)) {
                 rejectedRows.push({ ...row, rejection_reason: 'missing_required_deal_fields' });
@@ -140,11 +170,11 @@ function generateDealsLineItemsCsv(sales: SpotterLeadSold[], leadsMap: Map<numbe
             }
         });
     }
-    return {
-        valid: buildCsv(HEADERS.DEALS_LINE_ITEMS, validRows.map(row => HEADERS.DEALS_LINE_ITEMS.map(h => sanitizeCsvValue(row[h])))),
-        rejected: rejectedRows.length ? buildCsv([...HEADERS.DEALS_LINE_ITEMS, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.DEALS_LINE_ITEMS, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '',
-        counts: { exported: validRows.length, rejected: rejectedRows.length }
-    };
+
+    const validCsv = buildCsv(HEADERS.DEALS_LINE_ITEMS, validRows.map(row => HEADERS.DEALS_LINE_ITEMS.map(h => sanitizeCsvValue(row[h]))));
+    const rejectedCsv = rejectedRows.length ? buildCsv([...HEADERS.DEALS_LINE_ITEMS, 'rejection_reason'], rejectedRows.map(row => [...HEADERS.DEALS_LINE_ITEMS, 'rejection_reason'].map(h => sanitizeCsvValue(row[h])))) : '';
+
+    return { valid: validCsv, rejected: rejectedCsv, counts: { exported: validRows.length, rejected: rejectedRows.length } };
 }
 //endregion
 
@@ -159,58 +189,39 @@ export async function exportDataForMode(
     const exportId = uuidv4();
     log(`Iniciando exportação (ID: ${exportId}) no modo '${mode}'...`);
 
-    // --- Sold Mode Data Aggregation ---
-    log('Buscando dados de vendas e leads...');
     const sales = await fetchLeadsSold(token, baseUrl, log);
     const soldLeadIds = new Set(sales.map(s => s.leadId));
-    const leadsAndPersons = await fetchLeadsAndPersons(token, baseUrl, log);
-
-    const soldLeadsMap = new Map<number, SpotterLeadAndPerson>();
-    const soldOrgIds = new Set<number>();
-
-    for(const lead of leadsAndPersons) {
-        if (soldLeadIds.has(lead.id)) {
-            soldLeadsMap.set(lead.id, lead);
-            if (lead.organizationId) {
-                soldOrgIds.add(lead.organizationId);
-            }
-        }
-    }
-    log(`Encontrados ${soldLeadsMap.size} leads vendidos e ${soldOrgIds.size} organizações únicas.`);
+    log(`Encontradas ${sales.length} vendas, correspondendo a ${soldLeadIds.size} leads únicos.`);
 
     const files: { name: string, content: string }[] = [];
 
-    // --- CSV Generation ---
     if (entities.includes('companies')) {
-        const { valid, rejected, counts } = await generateCompaniesCsv(soldOrgIds, token, baseUrl, log);
+        const { valid, rejected, counts } = await generateCompaniesCsv(soldLeadIds, token, baseUrl, log);
         if (valid) files.push({ name: `${exportId}_companies.csv`, content: valid });
         if (rejected) files.push({ name: `${exportId}_companies_rejected.csv`, content: rejected });
         log(`Empresas: ${counts.exported} exportadas, ${counts.rejected} rejeitadas.`);
     }
     if (entities.includes('contacts')) {
-        const { valid, rejected, counts } = generateContactsCsv(soldLeadsMap, log);
+        const { valid, rejected, counts } = await generateContactsCsv(soldLeadIds, token, baseUrl, log);
         if (valid) files.push({ name: `${exportId}_contacts.csv`, content: valid });
         if (rejected) files.push({ name: `${exportId}_contacts_rejected.csv`, content: rejected });
         log(`Contatos: ${counts.exported} exportados, ${counts.rejected} rejeitados.`);
     }
     if (entities.includes('deals_line_items')) {
-        const { valid, rejected, counts } = generateDealsLineItemsCsv(sales, soldLeadsMap, log);
+        const { valid, rejected, counts } = await generateDealsLineItemsCsv(sales, token, baseUrl, log);
         if (valid) files.push({ name: `${exportId}_deals_line_items.csv`, content: valid });
         if (rejected) files.push({ name: `${exportId}_deals_line_items_rejected.csv`, content: rejected });
         log(`Negócios/Itens: ${counts.exported} exportados, ${counts.rejected} rejeitados.`);
     }
 
     if (files.length === 0) {
-        log('Nenhum arquivo gerado.');
+        log('Nenhum arquivo válido gerado.');
         return { exportId };
     }
 
-    // --- File Persistence ---
     let finalBuffer: Buffer;
     let finalFileName: string;
-
     if (files.length > 1) {
-        log('Criando arquivo ZIP...');
         const zip = new JSZip();
         files.forEach(f => zip.file(f.name, f.content));
         finalBuffer = await zip.generateAsync({ type: 'nodebuffer' });
@@ -220,8 +231,8 @@ export async function exportDataForMode(
         finalFileName = files[0].name;
     }
 
-    await saveExport(exportId, finalFileName, finalBuffer);
-    log(`Exportação salva como ${finalFileName}.`);
+    await saveTemporaryFile(finalFileName, finalBuffer);
+    log(`Exportação salva em ${finalFileName}.`);
 
     return { exportId };
 }

@@ -2,16 +2,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-type ExportMode = 'sold'; // Only 'sold' is enabled for now
+type ExportMode = 'sold';
 type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
-
-const modeConfig: Record<ExportMode, { label: string; description: string; entities: ExportEntity[] }> = {
-  sold: {
-    label: 'Vendas concluídas',
-    description: 'Exporte Empresas, Contatos e/ou Negócios com Itens de Linha baseados em vendas já realizadas.',
-    entities: ['companies', 'contacts', 'deals_line_items'],
-  },
-};
 
 const entityLabels: Record<ExportEntity, string> = {
     companies: 'Empresas',
@@ -20,11 +12,10 @@ const entityLabels: Record<ExportEntity, string> = {
 };
 
 export default function HomePage() {
-  const [selectedMode, setSelectedMode] = useState<ExportMode>('sold');
   const [selectedEntities, setSelectedEntities] = useState<Record<ExportEntity, boolean>>({
     companies: true,
-    contacts: true,
-    deals_line_items: true,
+    contacts: false,
+    deals_line_items: false,
   });
   const [isLoading, setIsLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -41,7 +32,7 @@ export default function HomePage() {
       .map(([entity]) => entity as ExportEntity);
 
     if (entitiesToExport.length === 0) {
-      setError('Selecione pelo menos um objeto para exportar.');
+      setError('Selecione pelo menos um arquivo para gerar.');
       return;
     }
 
@@ -51,26 +42,24 @@ export default function HomePage() {
     setError(null);
     setLogs([]);
 
-    const apiUrl = `/api/export?mode=${selectedMode}&export=${entitiesToExport.join(',')}`;
+    const apiUrl = `/api/export?mode=sold&export=${entitiesToExport.join(',')}`;
     const eventSource = new EventSource(apiUrl);
 
     eventSource.onopen = () => setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
 
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-
       if (data.type === 'log') {
         setLogs(prev => [...prev, data.message]);
       } else if (data.type === 'done') {
         setLogs(prev => [...prev, 'Processamento no servidor concluído.']);
         eventSource.close();
         setIsLoading(false);
-
         if (data.exportId) {
             setLogs(prev => [...prev, `ID da execução: ${data.exportId}. Iniciando download...`]);
             window.location.href = `/api/download/${data.exportId}`;
         } else {
-            setError("Exportação concluída, mas nenhum ID de exportação foi retornado.");
+            setLogs(prev => [...prev, "Nenhum arquivo válido foi gerado. Download não iniciado."]);
         }
       } else if (data.type === 'error') {
         setError(data.message);
@@ -90,35 +79,27 @@ export default function HomePage() {
     logContainerRef.current?.scrollTo(0, logContainerRef.current.scrollHeight);
   }, [logs]);
 
-  const currentConfig = modeConfig[selectedMode];
   const isAnythingSelected = Object.values(selectedEntities).some(Boolean);
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
-      <h1>Migração Spotter para HubSpot</h1>
-      <p>Assistente para gerar arquivos CSV, com cabeçalhos exatos, para importação no HubSpot.</p>
+      <h1>Migração Spotter → HubSpot</h1>
+      <p>Exporte dados do Spotter para arquivos CSV prontos para importação no HubSpot, com cabeçalhos exatos.</p>
 
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9' }}>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            1. Selecione o Cenário de Importação
-          </label>
-          <select id="import-mode" value={selectedMode} onChange={(e) => setSelectedMode(e.target.value as ExportMode)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
-            <option value="sold">Vendas concluídas</option>
-          </select>
-          <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>{currentConfig.description}</p>
-        </div>
-
-        <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Arquivos para Gerar</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {currentConfig.entities.map(entity => (
-              <div key={entity} style={{ display: 'flex', alignItems: 'center' }}>
-                <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
-                <label htmlFor={`checkbox-${entity}`}>{entityLabels[entity]}</label>
-              </div>
-            ))}
+          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>Selecione os Arquivos para Gerar (Modo: Vendas Concluídas)</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+            {Object.keys(entityLabels).map(entityStr => {
+              const entity = entityStr as ExportEntity;
+              return (
+                <div key={entity} style={{ display: 'flex', alignItems: 'center' }}>
+                  <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
+                  <label htmlFor={`checkbox-${entity}`}>{entityLabels[entity]}</label>
+                </div>
+              );
+            })}
           </div>
         </div>
 

@@ -1,6 +1,6 @@
 // app/api/download/[exportId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { getExport } from '@/lib/exportStorage';
+import { getTemporaryFile } from '@/lib/exportStorage';
 
 export async function GET(
   request: NextRequest,
@@ -12,7 +12,7 @@ export async function GET(
   }
 
   try {
-    const result = await getExport(exportId);
+    const result = await getTemporaryFile(exportId);
 
     if (!result) {
       return new NextResponse('Arquivo de exportação não encontrado ou expirado.', { status: 404 });
@@ -28,7 +28,8 @@ export async function GET(
     headers.set('Content-Type', contentType);
     headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
 
-    return new NextResponse(body, { headers });
+    // Using new Response is also a good practice here as it's more standard
+    return new Response(body, { headers });
 
   } catch (error) {
     console.error(`Falha ao processar o download para o ID ${exportId}:`, error);
