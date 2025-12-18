@@ -1,9 +1,6 @@
 // app/api/download/[exportId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { join } from 'path';
-import { readdir, readFile } from 'fs/promises';
-import { statSync } from 'fs';
-import JSZip from 'jszip';
+import { exportStorage, isBlobStorage } from '@/lib/exportStorage';
 
 export async function GET(
   request: NextRequest,
@@ -15,49 +12,38 @@ export async function GET(
   }
 
   try {
-    const exportsDir = join(process.cwd(), 'exports');
-    const allFiles = await readdir(exportsDir);
-
-    // Find all files related to this export run (excluding logs)
-    const exportFiles = allFiles.filter(
-      file => file.startsWith(exportId) && (file.endsWith('.csv'))
-    );
-
-    if (exportFiles.length === 0) {
-      return new NextResponse('Nenhum arquivo de exportação encontrado para este ID.', { status: 404 });
+    // If using Vercel Blob, the exportId is the full URL, so we can redirect.
+    if (isBlobStorage) {
+      // The `exportId` in this context is the blob's public URL passed from the exporter.
+      // We perform a simple validation to ensure it's a vercel-blob URL.
+      if (URL.canParse(exportId) && new URL(exportId).hostname.endsWith('.blob.vercel-storage.com')) {
+         return NextResponse.redirect(exportId);
+      } else {
+         return new NextResponse('URL de download inválida.', { status: 400 });
+      }
     }
 
-    // If there's only one CSV, send it directly
-    if (exportFiles.length === 1) {
-      const filePath = join(exportsDir, exportFiles[0]);
-      const fileBuffer = await readFile(filePath);
-      const headers = new Headers();
-      headers.set('Content-Type', 'text/csv;charset=utf-8');
-      headers.set('Content-Disposition', `attachment; filename="${exportFiles[0]}"`);
-      return new NextResponse(fileBuffer, { headers });
+    // If using /tmp storage, fetch the file from the filesystem.
+    const result = await exportStorage.getExport(exportId);
+
+    if (!result) {
+      return new NextResponse('Arquivo de exportação não encontrado ou expirado.', { status: 404 });
     }
 
-    // If there are multiple CSVs, create a ZIP file
-    const zip = new JSZip();
-    for (const file of exportFiles) {
-      const filePath = join(exportsDir, file);
-      const fileBuffer = await readFile(filePath);
-      zip.file(file, fileBuffer);
-    }
+    const { data, fileName } = result;
 
-    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+    // Convert Buffer to Uint8Array to be compatible with NextResponse
+    const body = new Uint8Array(data);
+
     const headers = new Headers();
-    headers.set('Content-Type', 'application/zip');
-    headers.set('Content-Disposition', `attachment; filename="${exportId}_export.zip"`);
+    const contentType = fileName.endsWith('.zip') ? 'application/zip' : 'text/csv;charset=utf-8';
+    headers.set('Content-Type', contentType);
+    headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
 
-    const body = new Uint8Array(zipBuffer);
     return new NextResponse(body, { headers });
 
   } catch (error) {
     console.error(`Falha ao processar o download para o ID ${exportId}:`, error);
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-         return new NextResponse('Diretório de exportações não encontrado.', { status: 404 });
-    }
     return new NextResponse('Erro interno do servidor.', { status: 500 });
   }
 }

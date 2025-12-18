@@ -1,6 +1,6 @@
 // app/api/export/route.ts
 import { NextRequest } from 'next/server';
-import { exportDataForMode, ExportMode, ExportableEntity } from '../../../lib/exporter';
+import { exportDataForMode, ExportMode, ExportableEntity } from '@/lib/exporter';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,11 +59,11 @@ export async function GET(request: NextRequest) {
 
       try {
         sendLog(`Iniciando exportação no modo: ${mode} para entidades: ${entitiesToExport.join(', ')}`);
-        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
+        const { downloadRef } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
 
         const doneMessage = {
           type: 'done',
-          exportId, // The frontend will use this to build a download link
+          exportId: downloadRef, // The frontend will use this to build a download link
         };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));
         controller.close();
