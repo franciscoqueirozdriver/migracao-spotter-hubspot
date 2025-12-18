@@ -1,17 +1,37 @@
 // app/api/export/route.ts
 import { NextRequest } from 'next/server';
-import { exportDataForMode, ExportMode } from '../../../lib/exporter';
+import { exportDataForMode, ExportMode, ExportableEntity } from '../../../lib/exporter';
 
-export const dynamic = 'force-dynamic'; // Defaults to auto
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get('mode') as ExportMode;
+  const exportEntitiesParam = searchParams.get('export');
 
   if (!mode || !['sold', 'open', 'lost', 'custom'].includes(mode)) {
     return new Response(JSON.stringify({ message: 'Modo inválido ou não fornecido.' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  if (!exportEntitiesParam || exportEntitiesParam.length === 0) {
+    return new Response(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const entitiesToExport = exportEntitiesParam.split(',') as ExportableEntity[];
+  const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals', 'lineItems'];
+  for (const entity of entitiesToExport) {
+    if (!validEntities.includes(entity)) {
+        return new Response(JSON.stringify({ message: `Entidade de exportação inválida: ${entity}` }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
   }
 
   const token = process.env.SPOTTER_TOKEN_EXACT;
@@ -38,13 +58,12 @@ export async function GET(request: NextRequest) {
       };
 
       try {
-        sendLog(`Iniciando exportação no modo: ${mode}`);
-        const { exportId, csvContent } = await exportDataForMode(mode, token, baseUrl, sendLog);
+        sendLog(`Iniciando exportação no modo: ${mode} para entidades: ${entitiesToExport.join(', ')}`);
+        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
 
         const doneMessage = {
           type: 'done',
-          exportId,
-          csvContent,
+          exportId, // The frontend will use this to build a download link
         };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));
         controller.close();
