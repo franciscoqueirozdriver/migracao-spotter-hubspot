@@ -8,7 +8,6 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get('mode') as ExportMode;
   const exportEntitiesParam = searchParams.get('export');
-  const funnelId = searchParams.get('funnelId');
 
   const validModes: ExportMode[] = ['sold', 'inProgress', 'lost'];
   if (!mode || !validModes.includes(mode)) {
@@ -17,15 +16,6 @@ export async function GET(request: NextRequest) {
 
   if (!exportEntitiesParam || exportEntitiesParam.length === 0) {
     return new Response(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), { status: 400 });
-  }
-
-  if (funnelId && !['22783', '20676'].includes(funnelId)) {
-    return new Response(JSON.stringify({ message: 'Funnel ID inválido.' }), { status: 400 });
-  }
-
-  const funnelIdAsNumber = funnelId ? parseInt(funnelId, 10) : undefined;
-  if (funnelId && isNaN(funnelIdAsNumber!)) {
-     return new Response(JSON.stringify({ message: 'Funnel ID deve ser um número válido.' }), { status: 400 });
   }
 
   const entitiesToExport = exportEntitiesParam.split(',') as ExportableEntity[];
@@ -54,7 +44,7 @@ export async function GET(request: NextRequest) {
 
       try {
         sendLog(`Iniciando exportação no modo: ${mode} para entidades: ${entitiesToExport.join(', ')}`);
-        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog, funnelIdAsNumber);
+        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
 
         const doneMessage = { type: 'done', exportId };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));

@@ -13,7 +13,7 @@ export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 // Spotter API Interfaces
 interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: SpotterProduct[] }
 interface SpotterProduct { id: number; name?: string; quantity?: number; individualValue?: number; }
-interface SpotterLead { id: number; lead?: string; organizationId?: number; website?: string; cnpj?: string; street?: string; number?: string; complement?: string; district?: string; cep?: string; city?: string; state?: string; country?: string; source?: { value?: string }; funnel?: { id?: number }; }
+interface SpotterLead { id: number; lead?: string; organizationId?: number; website?: string; cnpj?: string; street?: string; number?: string; complement?: string; district?: string; cep?: string; city?: string; state?: string; country?: string; source?: { value?: string }; }
 interface SpotterPerson { id: number; name?: string; leadId?: number; mainContact?: boolean; role?: string; emails?: { address?: string }[]; phones?: { number?: string }[]; social?: { platform?: string; id?: string }[]; }
 //endregion
 
@@ -46,7 +46,7 @@ const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAl
 const fetchPersons = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterPerson>(`${baseUrl}/v3/Persons/`, token, log);
 //endregion
 
-//region --- CSV GENERATION (These functions now receive filtered data) ---
+//region --- CSV GENERATION ---
 
 // A) Companies from Leads
 function generateCompaniesCsv(soldLeads: SpotterLead[], log: LogCallback) {
@@ -140,8 +140,7 @@ export async function exportDataForMode(
   entities: ExportableEntity[],
   token: string,
   baseUrl: string,
-  log: LogCallback,
-  funnelId?: number
+  log: LogCallback
 ): Promise<{ exportId: string }> {
     const exportId = uuidv4();
     log(`Iniciando exportação (ID: ${exportId}) no modo '${mode}'...`);
@@ -150,38 +149,26 @@ export async function exportDataForMode(
         throw new Error(`O modo '${mode}' ainda não está implementado.`);
     }
 
-    // "Sold" mode implementation
-    const allSales = await fetchLeadsSold(token, baseUrl, log);
-    const allLeads = await fetchLeads(token, baseUrl, log);
-    const leadsMap = new Map(allLeads.map(l => [l.id, l]));
-
-    let filteredSales = allSales;
-    if (funnelId) {
-        log(`Total de vendas antes do filtro: ${allSales.length}. Aplicando filtro para funnelId: ${funnelId}...`);
-        filteredSales = allSales.filter(sale => leadsMap.get(sale.leadId)?.funnel?.id === funnelId);
-        log(`Total de vendas após filtro: ${filteredSales.length}. Removidas: ${allSales.length - filteredSales.length}.`);
-    }
-    const soldLeadIds = new Set(filteredSales.map(s => s.leadId));
+    const sales = await fetchLeadsSold(token, baseUrl, log);
+    const soldLeadIds = new Set(sales.map(s => s.leadId));
+    log(`Encontradas ${sales.length} vendas, correspondendo a ${soldLeadIds.size} leads únicos.`);
 
     const files: { name: string, content: string }[] = [];
 
-    if (entities.includes('companies')) {
+    if (entities.includes('companies') || entities.includes('deals_line_items')) {
+        const allLeads = await fetchLeads(token, baseUrl, log);
         const soldLeads = allLeads.filter(lead => soldLeadIds.has(lead.id));
-        const { valid, rejected, counts } = generateCompaniesCsv(soldLeads, log);
-        if (valid) files.push({ name: `${exportId}_companies.csv`, content: valid });
-        if (rejected) files.push({ name: `${exportId}_companies_rejected.csv`, content: rejected });
-        log(`Empresas: ${counts.exported} exportadas, ${counts.rejected} rejeitadas.`);
-    }
-    if (entities.includes('contacts') || entities.includes('deals_line_items')) {
-        const allPersons = await fetchPersons(token, baseUrl, log);
-        if (entities.includes('contacts')) {
-            const soldPersons = allPersons.filter(p => p.leadId && soldLeadIds.has(p.leadId));
-            const { valid, rejected, counts } = generateContactsCsv(soldPersons, log);
-            if (valid) files.push({ name: `${exportId}_contacts.csv`, content: valid });
-            if (rejected) files.push({ name: `${exportId}_contacts_rejected.csv`, content: rejected });
-            log(`Contatos: ${counts.exported} exportados, ${counts.rejected} rejeitados.`);
+
+        if (entities.includes('companies')) {
+            const { valid, rejected, counts } = generateCompaniesCsv(soldLeads, log);
+            if (valid) files.push({ name: `${exportId}_companies.csv`, content: valid });
+            if (rejected) files.push({ name: `${exportId}_companies_rejected.csv`, content: rejected });
+            log(`Empresas: ${counts.exported} exportadas, ${counts.rejected} rejeitadas.`);
         }
+
         if (entities.includes('deals_line_items')) {
+            const allPersons = await fetchPersons(token, baseUrl, log);
+            const leadsMap = new Map(soldLeads.map(l => [l.id, l]));
             const personsMap = new Map<number, SpotterPerson[]>();
             allPersons.forEach(p => {
                 if (p.leadId && soldLeadIds.has(p.leadId)) {
@@ -189,11 +176,20 @@ export async function exportDataForMode(
                     personsMap.get(p.leadId)!.push(p);
                 }
             });
-            const { valid, rejected, counts } = generateDealsLineItemsCsv(filteredSales, leadsMap, personsMap, log);
+            const { valid, rejected, counts } = generateDealsLineItemsCsv(sales, leadsMap, personsMap, log);
             if (valid) files.push({ name: `${exportId}_deals_line_items.csv`, content: valid });
             if (rejected) files.push({ name: `${exportId}_deals_line_items_rejected.csv`, content: rejected });
             log(`Negócios/Itens: ${counts.exported} exportados, ${counts.rejected} rejeitados.`);
         }
+    }
+
+    if (entities.includes('contacts')) {
+        const allPersons = await fetchPersons(token, baseUrl, log);
+        const soldPersons = allPersons.filter(p => p.leadId && soldLeadIds.has(p.leadId));
+        const { valid, rejected, counts } = generateContactsCsv(soldPersons, log);
+        if (valid) files.push({ name: `${exportId}_contacts.csv`, content: valid });
+        if (rejected) files.push({ name: `${exportId}_contacts_rejected.csv`, content: rejected });
+        log(`Contatos: ${counts.exported} exportados, ${counts.rejected} rejeitados.`);
     }
 
     if (files.length === 0) {
