@@ -7,7 +7,7 @@ import JSZip from 'jszip';
 
 //region Type Definitions
 export type LogCallback = (message: string) => void;
-export type ExportMode = 'sold';
+export type ExportMode = 'sold' | 'inProgress' | 'lost';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 
 // Spotter API Interfaces
@@ -146,12 +146,15 @@ export async function exportDataForMode(
     const exportId = uuidv4();
     log(`Iniciando exportação (ID: ${exportId}) no modo '${mode}'...`);
 
-    // 1. Fetch all sales and all leads
+    if (mode !== 'sold') {
+        throw new Error(`O modo '${mode}' ainda não está implementado.`);
+    }
+
+    // "Sold" mode implementation
     const allSales = await fetchLeadsSold(token, baseUrl, log);
     const allLeads = await fetchLeads(token, baseUrl, log);
     const leadsMap = new Map(allLeads.map(l => [l.id, l]));
 
-    // 2. Filter sales by funnelId
     let filteredSales = allSales;
     if (funnelId) {
         log(`Total de vendas antes do filtro: ${allSales.length}. Aplicando filtro para funnelId: ${funnelId}...`);
@@ -162,7 +165,6 @@ export async function exportDataForMode(
 
     const files: { name: string, content: string }[] = [];
 
-    // 3. Generate CSVs based on the filtered data
     if (entities.includes('companies')) {
         const soldLeads = allLeads.filter(lead => soldLeadIds.has(lead.id));
         const { valid, rejected, counts } = generateCompaniesCsv(soldLeads, log);
@@ -171,7 +173,6 @@ export async function exportDataForMode(
         log(`Empresas: ${counts.exported} exportadas, ${counts.rejected} rejeitadas.`);
     }
     if (entities.includes('contacts') || entities.includes('deals_line_items')) {
-        // Fetch persons only if needed
         const allPersons = await fetchPersons(token, baseUrl, log);
         if (entities.includes('contacts')) {
             const soldPersons = allPersons.filter(p => p.leadId && soldLeadIds.has(p.leadId));

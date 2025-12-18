@@ -10,7 +10,8 @@ export async function GET(request: NextRequest) {
   const exportEntitiesParam = searchParams.get('export');
   const funnelId = searchParams.get('funnelId');
 
-  if (!mode || !['sold'].includes(mode)) { // Only 'sold' is supported
+  const validModes: ExportMode[] = ['sold', 'inProgress', 'lost'];
+  if (!mode || !validModes.includes(mode)) {
     return new Response(JSON.stringify({ message: 'Modo inválido ou não suportado.' }), { status: 400 });
   }
 
@@ -18,13 +19,12 @@ export async function GET(request: NextRequest) {
     return new Response(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), { status: 400 });
   }
 
-  // Basic validation for funnelId
   if (funnelId && !['22783', '20676'].includes(funnelId)) {
     return new Response(JSON.stringify({ message: 'Funnel ID inválido.' }), { status: 400 });
   }
 
   const funnelIdAsNumber = funnelId ? parseInt(funnelId, 10) : undefined;
-  if (funnelId && (funnelIdAsNumber === undefined || isNaN(funnelIdAsNumber))) {
+  if (funnelId && isNaN(funnelIdAsNumber!)) {
      return new Response(JSON.stringify({ message: 'Funnel ID deve ser um número válido.' }), { status: 400 });
   }
 

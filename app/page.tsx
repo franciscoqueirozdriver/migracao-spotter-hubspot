@@ -2,9 +2,27 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-type ExportMode = 'sold';
+type ExportMode = 'sold' | 'inProgress' | 'lost';
 type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
 type FunnelId = '22783' | '20676';
+
+const modeConfig: Record<ExportMode, { label: string; description: string; supportedEntities: ExportEntity[] }> = {
+  sold: {
+    label: 'Vendas concluídas',
+    description: 'Empresas, Contatos, Negócios e Itens de Linha de vendas a partir do endpoint LeadsSold.',
+    supportedEntities: ['companies', 'contacts', 'deals_line_items'],
+  },
+  inProgress: {
+    label: 'Em andamento',
+    description: 'Leads em andamento a partir do endpoint Leads (filtrado por etapas não finalizadas).',
+    supportedEntities: ['companies', 'contacts', 'deals_line_items'],
+  },
+  lost: {
+    label: 'Perdidos',
+    description: 'Leads perdidos/descartados a partir do endpoint Leads.',
+    supportedEntities: ['companies', 'contacts', 'deals_line_items'],
+  },
+};
 
 const entityLabels: Record<ExportEntity, string> = {
     companies: 'Empresas',
@@ -18,6 +36,7 @@ const funnelLabels: Record<FunnelId, string> = {
 };
 
 export default function HomePage() {
+  const [mode, setMode] = useState<ExportMode>('sold');
   const [selectedEntities, setSelectedEntities] = useState<Record<ExportEntity, boolean>>({
     companies: true,
     contacts: false,
@@ -49,7 +68,7 @@ export default function HomePage() {
     setError(null);
     setLogs([]);
 
-    const apiUrl = `/api/export?mode=sold&export=${entitiesToExport.join(',')}&funnelId=${selectedFunnel}`;
+    const apiUrl = `/api/export?mode=${mode}&export=${entitiesToExport.join(',')}&funnelId=${selectedFunnel}`;
     const eventSource = new EventSource(apiUrl);
 
     eventSource.onopen = () => setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
@@ -96,25 +115,41 @@ export default function HomePage() {
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9' }}>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <label htmlFor="funnel-selector" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            1. Selecione o Funil (Modo: Vendas Concluídas)
+          <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            1. O que você deseja importar?
           </label>
-          <select id="funnel-selector" value={selectedFunnel} onChange={(e) => setSelectedFunnel(e.target.value as FunnelId)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
-            {Object.keys(funnelLabels).map(funnelId => (
-              <option key={funnelId} value={funnelId}>{funnelLabels[funnelId as FunnelId]}</option>
+          <select id="import-mode" value={mode} onChange={(e) => setMode(e.target.value as ExportMode)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
+            {Object.keys(modeConfig).map(modeKey => (
+              <option key={modeKey} value={modeKey}>{modeConfig[modeKey as ExportMode].label}</option>
             ))}
           </select>
+          <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>{modeConfig[mode].description}</p>
         </div>
 
+        {mode === 'sold' && (
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label htmlFor="funnel-selector" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+              2. Selecione o Funil
+            </label>
+            <select id="funnel-selector" value={selectedFunnel} onChange={(e) => setSelectedFunnel(e.target.value as FunnelId)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
+              {Object.keys(funnelLabels).map(funnelId => (
+                <option key={funnelId} value={funnelId}>{funnelLabels[funnelId as FunnelId]}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Arquivos para Gerar</h3>
+          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>3. Selecione os Arquivos para Gerar</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
             {Object.keys(entityLabels).map(entityStr => {
               const entity = entityStr as ExportEntity;
+              const isSupported = modeConfig[mode].supportedEntities.includes(entity);
               return (
-                <div key={entity} style={{ display: 'flex', alignItems: 'center' }}>
-                  <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
+                <div key={entity} style={{ display: 'flex', alignItems: 'center', opacity: isSupported ? 1 : 0.5 }}>
+                  <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading || !isSupported} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
                   <label htmlFor={`checkbox-${entity}`}>{entityLabels[entity]}</label>
+                  {!isSupported && <span style={{ fontSize: '12px', color: '#999', marginLeft: '1rem' }}>(Indisponível neste modo)</span>}
                 </div>
               );
             })}
