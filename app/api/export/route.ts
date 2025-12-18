@@ -1,63 +1,46 @@
 // app/api/export/route.ts
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { exportDataForMode, ExportMode, ExportableEntity } from '@/lib/exporter';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const mode = searchParams.get('mode') as ExportMode;
-  const exportEntitiesParam = searchParams.get('export');
+  const mode = (searchParams.get('mode') ?? 'sold') as ExportMode;
+  const entity = searchParams.get('export') as ExportableEntity | null;
 
   const validModes: ExportMode[] = ['sold', 'inProgress', 'lost'];
-  if (!mode || !validModes.includes(mode)) {
-    return new Response(JSON.stringify({ message: 'Modo inválido ou não suportado.' }), { status: 400 });
+  if (!validModes.includes(mode)) {
+    return new NextResponse(JSON.stringify({ message: 'Modo inválido ou não suportado.' }), { status: 400 });
   }
 
-  if (!exportEntitiesParam || exportEntitiesParam.length === 0) {
-    return new Response(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), { status: 400 });
-  }
-
-  const entitiesToExport = exportEntitiesParam.split(',') as ExportableEntity[];
-  const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
-  for (const entity of entitiesToExport) {
-    if (!validEntities.includes(entity)) {
-        return new Response(JSON.stringify({ message: `Entidade de exportação inválida: ${entity}` }), { status: 400 });
-    }
+  if (!entity) {
+    return new NextResponse(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), { status: 400 });
   }
 
   const token = process.env.SPOTTER_TOKEN_EXACT;
   const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
 
   if (!token) {
-    return new Response(JSON.stringify({ message: 'Token de autenticação do Spotter não configurado.' }), { status: 500 });
+    return new NextResponse(JSON.stringify({ message: 'Token de autenticação do Spotter não configurado.' }), { status: 500 });
   }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder();
-      const sendLog = (message: string) => controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'log', message })}\n\n`));
-      const sendError = (message: string) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message })}\n\n`));
-        controller.close();
-      };
+  try {
+    const { fileName, content } = await exportDataForMode(mode, entity, token, baseUrl);
 
-      try {
-        sendLog(`Iniciando exportação no modo: ${mode} para entidades: ${entitiesToExport.join(', ')}`);
-        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
+    if (!content) {
+        return new NextResponse(JSON.stringify({ message: 'Nenhum dado gerado para a exportação.' }), { status: 200 });
+    }
 
-        const doneMessage = { type: 'done', exportId };
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));
-        controller.close();
-      } catch (error) {
-        console.error('Falha na exportação:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido no servidor.';
-        sendError(errorMessage);
-      }
-    },
-  });
+    const headers = new Headers();
+    headers.set('Content-Type', 'text/csv; charset=utf-8');
+    headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
 
-  return new Response(stream, {
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
-  });
+    return new Response(content, { headers });
+
+  } catch (error) {
+    console.error('Falha na exportação:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido no servidor.';
+    return new NextResponse(JSON.stringify({ message: errorMessage }), { status: 500 });
+  }
 }
