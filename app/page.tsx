@@ -4,11 +4,17 @@ import React, { useState, useRef, useEffect } from 'react';
 
 type ExportMode = 'sold';
 type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
+type FunnelId = '22783' | '20676';
 
 const entityLabels: Record<ExportEntity, string> = {
     companies: 'Empresas',
     contacts: 'Contatos',
     deals_line_items: 'Negócios + Itens de Linha',
+};
+
+const funnelLabels: Record<FunnelId, string> = {
+    '22783': 'Venda (22783)',
+    '20676': 'Pré-venda (20676)',
 };
 
 export default function HomePage() {
@@ -17,6 +23,7 @@ export default function HomePage() {
     contacts: false,
     deals_line_items: false,
   });
+  const [selectedFunnel, setSelectedFunnel] = useState<FunnelId>('22783');
   const [isLoading, setIsLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +49,7 @@ export default function HomePage() {
     setError(null);
     setLogs([]);
 
-    const apiUrl = `/api/export?mode=sold&export=${entitiesToExport.join(',')}`;
+    const apiUrl = `/api/export?mode=sold&export=${entitiesToExport.join(',')}&funnelId=${selectedFunnel}`;
     const eventSource = new EventSource(apiUrl);
 
     eventSource.onopen = () => setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
@@ -89,7 +96,18 @@ export default function HomePage() {
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9' }}>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>Selecione os Arquivos para Gerar (Modo: Vendas Concluídas)</h3>
+          <label htmlFor="funnel-selector" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            1. Selecione o Funil (Modo: Vendas Concluídas)
+          </label>
+          <select id="funnel-selector" value={selectedFunnel} onChange={(e) => setSelectedFunnel(e.target.value as FunnelId)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
+            {Object.keys(funnelLabels).map(funnelId => (
+              <option key={funnelId} value={funnelId}>{funnelLabels[funnelId as FunnelId]}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Arquivos para Gerar</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
             {Object.keys(entityLabels).map(entityStr => {
               const entity = entityStr as ExportEntity;
