@@ -292,7 +292,7 @@ export async function exportDataForMode(
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido';
         runLog.errors.push({ message: errorMessage, details: error });
-        runLog.endTime = newtoISOString();
+        runLog.endTime = new Date().toISOString();
         await writeLogFile(runId, runLog);
         log(`ERRO: ${errorMessage}`);
         throw error;

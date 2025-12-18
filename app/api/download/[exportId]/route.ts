@@ -50,7 +50,8 @@ export async function GET(
     headers.set('Content-Type', 'application/zip');
     headers.set('Content-Disposition', `attachment; filename="${exportId}_export.zip"`);
 
-    return new NextResponse(zipBuffer, { headers });
+    const body = new Uint8Array(zipBuffer);
+    return new NextResponse(body, { headers });
 
   } catch (error) {
     console.error(`Falha ao processar o download para o ID ${exportId}:`, error);
