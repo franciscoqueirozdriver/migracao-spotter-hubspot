@@ -1,60 +1,49 @@
 // lib/exportStorage.ts
-import { put, head, del } from '@vercel/blob';
 import { join } from 'path';
 import { writeFile, readFile, mkdir, readdir } from 'fs/promises';
 
-const useVercelBlob = !!process.env.BLOB_READ_WRITE_TOKEN;
+const EXPORTS_DIR = join('/tmp', 'exports');
 
-// Interface for the functions
-interface ExportStorage {
-  saveExport: (exportId: string, fileName: string, data: Buffer) => Promise<{ downloadRef: string }>;
-  getExport: (downloadRef: string) => Promise<{ data: Buffer; fileName: string } | null>;
+/**
+ * Saves a file buffer to the temporary directory.
+ * @param exportId The unique identifier for the export run.
+ * @param fileName The name of the file to save.
+ * @param data The file content as a Buffer.
+ * @returns The exportId to be used as a download reference.
+ */
+export async function saveExport(exportId: string, fileName: string, data: Buffer): Promise<string> {
+  await mkdir(EXPORTS_DIR, { recursive: true });
+  const filePath = join(EXPORTS_DIR, fileName);
+  await writeFile(filePath, data);
+  return exportId;
 }
 
-// --- Vercel Blob Implementation ---
-const blobStorage: ExportStorage = {
-  async saveExport(exportId, fileName, data) {
-    const blobResult = await put(fileName, data, {
-      access: 'public',
-      addRandomSuffix: false, // Use the exact filename
-    });
-    // The downloadRef will be the URL of the blob
-    return { downloadRef: blobResult.url };
-  },
-  async getExport(downloadRef) {
-    // In this implementation, the downloadRef is the public URL,
-    // so the download route will just redirect to it.
-    // This function is kept for interface consistency but won't be directly called
-    // by the download route when using Vercel Blob with public access.
-    // A real implementation might fetch the blob if it were private.
-    return null;
-  }
-};
+/**
+ * Retrieves an exported file from the temporary directory.
+ * @param exportId The unique identifier for the export run.
+ * @returns An object containing the file data and name, or null if not found.
+ */
+export async function getExport(exportId: string): Promise<{ data: Buffer; fileName: string } | null> {
+  try {
+    const files = await readdir(EXPORTS_DIR);
+    // Find any file associated with this export ID (could be a .csv or .zip)
+    const fileName = files.find(f => f.startsWith(exportId));
 
-// --- Filesystem (/tmp) Implementation ---
-const tmpStorage: ExportStorage = {
-  async saveExport(exportId, fileName, data) {
-    const dir = join('/tmp', 'exports');
-    await mkdir(dir, { recursive: true });
-    const filePath = join(dir, fileName);
-    await writeFile(filePath, data);
-    // The downloadRef is just the exportId, which will be used to find the file
-    return { downloadRef: exportId };
-  },
-  async getExport(downloadRef) {
-    const dir = join('/tmp', 'exports');
-    const files = await readdir(dir);
-    // Find the file associated with this export ID
-    const fileName = files.find(f => f.startsWith(downloadRef));
     if (!fileName) {
+      console.warn(`No export file found for ID: ${exportId}`);
       return null;
     }
-    const filePath = join(dir, fileName);
+
+    const filePath = join(EXPORTS_DIR, fileName);
     const data = await readFile(filePath);
     return { data, fileName };
+  } catch (error) {
+    // This can happen if the /tmp directory is cleared, which is expected.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      console.warn(`Export directory not found for ID: ${exportId}. It may have been cleared.`);
+      return null;
+    }
+    // For other errors, re-throw them.
+    throw error;
   }
-};
-
-export const exportStorage: ExportStorage = useVercelBlob ? blobStorage : tmpStorage;
-
-export const isBlobStorage = useVercelBlob;
+}

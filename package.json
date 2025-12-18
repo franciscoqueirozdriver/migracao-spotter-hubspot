@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@vercel/blob": "^2.0.0",
     "jszip": "^3.10.1",
     "next": "14.2.3",
     "react": "^18",

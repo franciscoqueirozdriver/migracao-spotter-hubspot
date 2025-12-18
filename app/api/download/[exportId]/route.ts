@@ -1,6 +1,6 @@
 // app/api/download/[exportId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { exportStorage, isBlobStorage } from '@/lib/exportStorage';
+import { getExport } from '@/lib/exportStorage';
 
 export async function GET(
   request: NextRequest,
@@ -12,19 +12,7 @@ export async function GET(
   }
 
   try {
-    // If using Vercel Blob, the exportId is the full URL, so we can redirect.
-    if (isBlobStorage) {
-      // The `exportId` in this context is the blob's public URL passed from the exporter.
-      // We perform a simple validation to ensure it's a vercel-blob URL.
-      if (URL.canParse(exportId) && new URL(exportId).hostname.endsWith('.blob.vercel-storage.com')) {
-         return NextResponse.redirect(exportId);
-      } else {
-         return new NextResponse('URL de download inválida.', { status: 400 });
-      }
-    }
-
-    // If using /tmp storage, fetch the file from the filesystem.
-    const result = await exportStorage.getExport(exportId);
+    const result = await getExport(exportId);
 
     if (!result) {
       return new NextResponse('Arquivo de exportação não encontrado ou expirado.', { status: 404 });

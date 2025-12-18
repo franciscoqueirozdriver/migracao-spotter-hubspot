@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
   }
 
   const entitiesToExport = exportEntitiesParam.split(',') as ExportableEntity[];
-  const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals', 'lineItems'];
+  const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
   for (const entity of entitiesToExport) {
     if (!validEntities.includes(entity)) {
         return new Response(JSON.stringify({ message: `Entidade de exportação inválida: ${entity}` }), {
@@ -59,11 +59,11 @@ export async function GET(request: NextRequest) {
 
       try {
         sendLog(`Iniciando exportação no modo: ${mode} para entidades: ${entitiesToExport.join(', ')}`);
-        const { downloadRef } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
+        const { exportId } = await exportDataForMode(mode, entitiesToExport, token, baseUrl, sendLog);
 
         const doneMessage = {
           type: 'done',
-          exportId: downloadRef, // The frontend will use this to build a download link
+          exportId: exportId, // The frontend will use this to build a download link
         };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));
         controller.close();

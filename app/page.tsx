@@ -2,32 +2,21 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-type ExportMode = 'sold' | 'open' | 'lost';
-type ExportEntity = 'companies' | 'contacts' | 'deals' | 'lineItems';
+type ExportMode = 'sold'; // Only 'sold' is enabled for now
+type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
 
 const modeConfig: Record<ExportMode, { label: string; description: string; entities: ExportEntity[] }> = {
   sold: {
     label: 'Vendas concluídas',
-    description: 'Exporte Empresas, Contatos, Negócios e/ou Itens de Linha baseados em vendas já realizadas.',
-    entities: ['companies', 'contacts', 'deals', 'lineItems'],
-  },
-  open: {
-    label: 'Leads em andamento',
-    description: 'Exporte Empresas, Contatos e Negócios que ainda estão no pipeline de vendas.',
-    entities: ['companies', 'contacts', 'deals'],
-  },
-  lost: {
-    label: 'Leads perdidos',
-    description: 'Exporte Empresas, Contatos e Negócios que foram marcados como perdidos.',
-    entities: ['companies', 'contacts', 'deals'],
+    description: 'Exporte Empresas, Contatos e/ou Negócios com Itens de Linha baseados em vendas já realizadas.',
+    entities: ['companies', 'contacts', 'deals_line_items'],
   },
 };
 
 const entityLabels: Record<ExportEntity, string> = {
     companies: 'Empresas',
     contacts: 'Contatos',
-    deals: 'Negócios',
-    lineItems: 'Itens de Linha',
+    deals_line_items: 'Negócios + Itens de Linha',
 };
 
 export default function HomePage() {
@@ -35,8 +24,7 @@ export default function HomePage() {
   const [selectedEntities, setSelectedEntities] = useState<Record<ExportEntity, boolean>>({
     companies: true,
     contacts: true,
-    deals: true,
-    lineItems: true,
+    deals_line_items: true,
   });
   const [isLoading, setIsLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -44,30 +32,13 @@ export default function HomePage() {
   const logContainerRef = useRef<HTMLPreElement>(null);
 
   const handleEntityChange = (entity: ExportEntity) => {
-    const newSelection = { ...selectedEntities, [entity]: !selectedEntities[entity] };
-
-    // Rule: Selecting lineItems auto-selects deals
-    if (entity === 'lineItems' && newSelection.lineItems) {
-      if (!newSelection.deals) {
-          newSelection.deals = true;
-          setLogs(prev => [...prev, "AVISO: 'Negócios' foi selecionado automaticamente pois é um pré-requisito para 'Itens de Linha'."]);
-      }
-    }
-
-    // Rule: Deselecting deals also deselects lineItems
-    if (entity === 'deals' && !newSelection.deals) {
-        if (newSelection.lineItems) {
-            newSelection.lineItems = false;
-        }
-    }
-
-    setSelectedEntities(newSelection);
+    setSelectedEntities(prev => ({ ...prev, [entity]: !prev[entity] }));
   };
 
   const startExport = () => {
     const entitiesToExport = Object.entries(selectedEntities)
       .filter(([_, isSelected]) => isSelected)
-      .map(([entity]) => entity);
+      .map(([entity]) => entity as ExportEntity);
 
     if (entitiesToExport.length === 0) {
       setError('Selecione pelo menos um objeto para exportar.');
@@ -83,9 +54,7 @@ export default function HomePage() {
     const apiUrl = `/api/export?mode=${selectedMode}&export=${entitiesToExport.join(',')}`;
     const eventSource = new EventSource(apiUrl);
 
-    eventSource.onopen = () => {
-      setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
-    };
+    eventSource.onopen = () => setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
 
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -99,7 +68,6 @@ export default function HomePage() {
 
         if (data.exportId) {
             setLogs(prev => [...prev, `ID da execução: ${data.exportId}. Iniciando download...`]);
-            // Trigger download from the new endpoint
             window.location.href = `/api/download/${data.exportId}`;
         } else {
             setError("Exportação concluída, mas nenhum ID de exportação foi retornado.");
@@ -119,9 +87,7 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
+    logContainerRef.current?.scrollTo(0, logContainerRef.current.scrollHeight);
   }, [logs]);
 
   const currentConfig = modeConfig[selectedMode];
@@ -130,7 +96,7 @@ export default function HomePage() {
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
       <h1>Migração Spotter para HubSpot</h1>
-      <p>Um assistente para gerar arquivos CSV compatíveis com o importador do HubSpot a partir da API da Exact Spotter.</p>
+      <p>Assistente para gerar arquivos CSV, com cabeçalhos exatos, para importação no HubSpot.</p>
 
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9' }}>
 
@@ -138,54 +104,25 @@ export default function HomePage() {
           <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             1. Selecione o Cenário de Importação
           </label>
-          <select
-            id="import-mode"
-            value={selectedMode}
-            onChange={(e) => setSelectedMode(e.target.value as ExportMode)}
-            disabled={isLoading}
-            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
-          >
+          <select id="import-mode" value={selectedMode} onChange={(e) => setSelectedMode(e.target.value as ExportMode)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
             <option value="sold">Vendas concluídas</option>
-            <option value="open" disabled>Leads em andamento (Em breve)</option>
-            <option value="lost" disabled>Leads perdidos (Em breve)</option>
           </select>
           <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>{currentConfig.description}</p>
         </div>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Objetos para Exportar</h3>
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Arquivos para Gerar</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {currentConfig.entities.map(entity => (
               <div key={entity} style={{ display: 'flex', alignItems: 'center' }}>
-                <input
-                  type="checkbox"
-                  id={`checkbox-${entity}`}
-                  checked={selectedEntities[entity]}
-                  onChange={() => handleEntityChange(entity)}
-                  disabled={isLoading}
-                  style={{ marginRight: '0.5rem', height: '18px', width: '18px' }}
-                />
+                <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
                 <label htmlFor={`checkbox-${entity}`}>{entityLabels[entity]}</label>
               </div>
             ))}
           </div>
         </div>
 
-        <button
-          onClick={startExport}
-          disabled={isLoading || !isAnythingSelected}
-          style={{
-            width: '100%',
-            padding: '12px 20px',
-            fontSize: '18px',
-            cursor: (isLoading || !isAnythingSelected) ? 'not-allowed' : 'pointer',
-            backgroundColor: (isLoading || !isAnythingSelected) ? '#ccc' : '#28a745',
-            color: 'white',
-            border: 'none',
-            borderRadius: '5px',
-            fontWeight: 'bold',
-          }}
-        >
+        <button onClick={startExport} disabled={isLoading || !isAnythingSelected} style={{ width: '100%', padding: '12px 20px', fontSize: '18px', cursor: (isLoading || !isAnythingSelected) ? 'not-allowed' : 'pointer', backgroundColor: (isLoading || !isAnythingSelected) ? '#ccc' : '#28a745', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}>
           {isLoading ? 'Exportando...' : `Gerar Arquivo(s) CSV`}
         </button>
       </div>
