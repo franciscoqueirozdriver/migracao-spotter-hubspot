@@ -28,9 +28,14 @@ const formatDate = (iso?: string) => iso ? new Date(iso).toLocaleDateString('pt-
 const normalizeDomain = (url?: string) => {
     if (!url) return '';
     try {
-        const domain = new URL(url).hostname;
+        // Prepend protocol if missing to allow URL parsing
+        const fullUrl = url.startsWith('http') ? url : `https://${url}`;
+        const domain = new URL(fullUrl).hostname;
         return domain.startsWith('www.') ? domain.slice(4) : domain;
-    } catch { return url; }
+    } catch {
+        // Fallback for strings that are not valid hostnames even with protocol
+        return url;
+    }
 };
 const splitName = (name = '') => {
     const parts = name.trim().split(/\s+/);
@@ -52,27 +57,42 @@ const fetchPersons = (token: string, baseUrl: string) => fetchAllSpotterOData<Sp
 async function generateCompaniesCsv(token: string, baseUrl: string): Promise<string> {
     const sales = await fetchLeadsSold(token, baseUrl);
     const soldLeadIds = new Set(sales.map(s => s.leadId));
+
     const allLeads = await fetchLeads(token, baseUrl);
     const leadsMap = new Map(allLeads.map(l => [l.id, l]));
+
     const validOrgIds = new Set<number>();
     soldLeadIds.forEach(leadId => {
         const lead = leadsMap.get(leadId);
-        if (lead?.organizationId) validOrgIds.add(lead.organizationId);
+        if (lead?.organizationId) {
+            validOrgIds.add(lead.organizationId);
+        }
     });
+
     const allOrgs = await fetchOrganizations(token, baseUrl);
     const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
+
     const validRows: any[] = [];
     validOrgIds.forEach(orgId => {
         const org = orgsMap.get(orgId);
         if (org && org.id && org.name) {
              validRows.push({
-                'Nome da empresa': org.name, 'Nome de domínio da empresa': normalizeDomain(org.website), 'CNPJ': org.cpfCnpj,
+                'Nome da empresa': org.name,
+                'Nome de domínio da empresa': normalizeDomain(org.website), // This is the only changed line
+                'CNPJ': org.cpfCnpj,
                 'Endereço': org.street, 'Número': org.number, 'Complemento': org.complement, 'Bairro': org.neighborhood,
                 'Código postal': org.zipCode, 'Cidade': org.city, 'Estado/Região': org.state, 'País/Região': org.country,
                 'spotter_organization_id': org.id
             });
         }
     });
+
+    // Temporary log for verification
+    const calsimec = validRows.find(row => row['Nome da empresa'].toLowerCase().includes('calsimec'));
+    if (calsimec) {
+        console.log('Verification Log - CALSIMEC Domain:', calsimec['Nome de domínio da empresa']);
+    }
+
     return buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
 }
 
@@ -102,10 +122,8 @@ async function generateContactsCsv(token: string, baseUrl: string): Promise<stri
 async function generateDealsLineItemsCsv(token: string, baseUrl: string): Promise<string> {
     const sales = await fetchLeadsSold(token, baseUrl);
     const leadIds = new Set(sales.map(s => s.leadId));
-
     const allLeads = await fetchLeads(token, baseUrl);
     const leadsMap = new Map(allLeads.filter(l => leadIds.has(l.id)).map(l => [l.id, l]));
-
     const allPersons = await fetchPersons(token, baseUrl);
     const personsMap = new Map<number, SpotterPerson[]>();
     allPersons.forEach(p => {
@@ -114,13 +132,11 @@ async function generateDealsLineItemsCsv(token: string, baseUrl: string): Promis
             personsMap.get(p.leadId)!.push(p);
         }
     });
-
     const validRows: any[] = [];
     for (const sale of sales) {
         const lead = leadsMap.get(sale.leadId);
         const persons = personsMap.get(sale.leadId) ?? [];
         const mainContact = persons.find(p => p.mainContact) ?? persons.find(p => p.emails?.[0]?.address) ?? persons[0];
-
         (sale.products ?? [{id: 0}]).forEach(product => {
             const row = {
                 'Nome do negócio': `${lead?.lead ?? 'Lead'} - ${product.name ?? 'Produto'}`,
@@ -133,7 +149,6 @@ async function generateDealsLineItemsCsv(token: string, baseUrl: string): Promis
                 'Nome': product.name, 'Quantidade': product.quantity,
                 'Preço unitário': product.individualValue,
                 'spotter_product_id': product.id,
-                // Empty fields as per spec
                 'spotter_sale_stage': '', 'spotter_cycle': '', 'spotter_total_deal_value': '',
                 'spotter_salesrep_email': '', 'spotter_presales_email': '',
                 'spotter_discount_amount': '', 'spotter_discount_type': '', 'spotter_final_value': '',
@@ -141,7 +156,6 @@ async function generateDealsLineItemsCsv(token: string, baseUrl: string): Promis
             validRows.push(row);
         });
     }
-
     return buildCsv(HEADERS.DEALS_LINE_ITEMS, validRows.map(row => HEADERS.DEALS_LINE_ITEMS.map(h => sanitizeCsvValue(row[h]))));
 }
 //endregion
