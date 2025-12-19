@@ -24,6 +24,7 @@ const HEADERS = {
 //endregion
 
 //region --- UTILITY & HELPER FUNCTIONS ---
+const formatDate = (iso?: string) => iso ? new Date(iso).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : '';
 const normalizeDomain = (url?: string) => {
     if (!url) return '';
     try {
@@ -51,21 +52,15 @@ const fetchPersons = (token: string, baseUrl: string) => fetchAllSpotterOData<Sp
 async function generateCompaniesCsv(token: string, baseUrl: string): Promise<string> {
     const sales = await fetchLeadsSold(token, baseUrl);
     const soldLeadIds = new Set(sales.map(s => s.leadId));
-
     const allLeads = await fetchLeads(token, baseUrl);
     const leadsMap = new Map(allLeads.map(l => [l.id, l]));
-
     const validOrgIds = new Set<number>();
     soldLeadIds.forEach(leadId => {
         const lead = leadsMap.get(leadId);
-        if (lead?.organizationId) {
-            validOrgIds.add(lead.organizationId);
-        }
+        if (lead?.organizationId) validOrgIds.add(lead.organizationId);
     });
-
     const allOrgs = await fetchOrganizations(token, baseUrl);
     const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
-
     const validRows: any[] = [];
     validOrgIds.forEach(orgId => {
         const org = orgsMap.get(orgId);
@@ -78,7 +73,6 @@ async function generateCompaniesCsv(token: string, baseUrl: string): Promise<str
             });
         }
     });
-
     return buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
 }
 
@@ -86,10 +80,8 @@ async function generateCompaniesCsv(token: string, baseUrl: string): Promise<str
 async function generateContactsCsv(token: string, baseUrl: string): Promise<string> {
     const sales = await fetchLeadsSold(token, baseUrl);
     const soldLeadIds = new Set(sales.map(s => s.leadId));
-
     const allPersons = await fetchPersons(token, baseUrl);
     const soldPersons = allPersons.filter(p => p.leadId && soldLeadIds.has(p.leadId));
-
     const validRows: any[] = [];
     soldPersons.forEach(person => {
         if (person.id && person.leadId) {
@@ -103,8 +95,54 @@ async function generateContactsCsv(token: string, baseUrl: string): Promise<stri
             });
         }
     });
-
     return buildCsv(HEADERS.CONTACTS, validRows.map(row => HEADERS.CONTACTS.map(h => sanitizeCsvValue(row[h]))));
+}
+
+// C) Deals + Line Items
+async function generateDealsLineItemsCsv(token: string, baseUrl: string): Promise<string> {
+    const sales = await fetchLeadsSold(token, baseUrl);
+    const leadIds = new Set(sales.map(s => s.leadId));
+
+    const allLeads = await fetchLeads(token, baseUrl);
+    const leadsMap = new Map(allLeads.filter(l => leadIds.has(l.id)).map(l => [l.id, l]));
+
+    const allPersons = await fetchPersons(token, baseUrl);
+    const personsMap = new Map<number, SpotterPerson[]>();
+    allPersons.forEach(p => {
+        if (p.leadId && leadIds.has(p.leadId)) {
+            if (!personsMap.has(p.leadId)) personsMap.set(p.leadId, []);
+            personsMap.get(p.leadId)!.push(p);
+        }
+    });
+
+    const validRows: any[] = [];
+    for (const sale of sales) {
+        const lead = leadsMap.get(sale.leadId);
+        const persons = personsMap.get(sale.leadId) ?? [];
+        const mainContact = persons.find(p => p.mainContact) ?? persons.find(p => p.emails?.[0]?.address) ?? persons[0];
+
+        (sale.products ?? [{id: 0}]).forEach(product => {
+            const row = {
+                'Nome do negócio': `${lead?.lead ?? 'Lead'} - ${product.name ?? 'Produto'}`,
+                'Pipeline': 'default', 'Etapa do negócio': 'Vendido',
+                'spotter_sale_id': sale.id, 'spotter_lead_id': sale.leadId,
+                'spotter_sale_date': formatDate(sale.saleDate),
+                'origem_comercial_real': lead?.source?.value,
+                'spotter_organization_id': lead?.organizationId,
+                'spotter_person_id': mainContact?.id,
+                'Nome': product.name, 'Quantidade': product.quantity,
+                'Preço unitário': product.individualValue,
+                'spotter_product_id': product.id,
+                // Empty fields as per spec
+                'spotter_sale_stage': '', 'spotter_cycle': '', 'spotter_total_deal_value': '',
+                'spotter_salesrep_email': '', 'spotter_presales_email': '',
+                'spotter_discount_amount': '', 'spotter_discount_type': '', 'spotter_final_value': '',
+            };
+            validRows.push(row);
+        });
+    }
+
+    return buildCsv(HEADERS.DEALS_LINE_ITEMS, validRows.map(row => HEADERS.DEALS_LINE_ITEMS.map(h => sanitizeCsvValue(row[h]))));
 }
 //endregion
 
@@ -122,13 +160,11 @@ export async function exportDataForMode(
 
     switch (entity) {
         case 'companies':
-            const companiesCsv = await generateCompaniesCsv(token, baseUrl);
-            return { fileName: 'companies.csv', content: companiesCsv };
+            return { fileName: 'companies.csv', content: await generateCompaniesCsv(token, baseUrl) };
         case 'contacts':
-            const contactsCsv = await generateContactsCsv(token, baseUrl);
-            return { fileName: 'contacts.csv', content: contactsCsv };
+            return { fileName: 'contacts.csv', content: await generateContactsCsv(token, baseUrl) };
         case 'deals_line_items':
-             throw new Error(`A exportação de '${entity}' ainda não foi implementada neste fluxo.`);
+            return { fileName: 'deals_line_items.csv', content: await generateDealsLineItemsCsv(token, baseUrl) };
         default:
             throw new Error(`Entidade desconhecida: ${entity}`);
     }

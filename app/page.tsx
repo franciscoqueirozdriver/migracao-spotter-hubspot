@@ -8,8 +8,8 @@ type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
 const modeConfig: Record<ExportMode, { label: string; description: string; supportedEntities: ExportEntity[] }> = {
   sold: {
     label: 'Vendas concluídas',
-    description: 'Exporte empresas ou contatos relacionados a vendas concluídas.',
-    supportedEntities: ['companies', 'contacts'], // deals_line_items is not ready in the new flow
+    description: 'Exporte empresas, contatos ou negócios relacionados a vendas concluídas.',
+    supportedEntities: ['companies', 'contacts', 'deals_line_items'],
   },
   inProgress: {
     label: 'Em andamento',
@@ -51,15 +51,12 @@ export default function HomePage() {
 
       const blob = await response.blob();
       const contentDisposition = response.headers.get('content-disposition');
-      let fileName = `${selectedEntity}_${mode}.csv`; // Fallback filename
+      let fileName = `${selectedEntity}_${mode}.csv`;
       if (contentDisposition) {
         const match = contentDisposition.match(/filename="([^"]+)"/);
-        if (match && match[1]) {
-          fileName = match[1];
-        }
+        if (match && match[1]) fileName = match[1];
       }
 
-      // Create a link and trigger the download
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
