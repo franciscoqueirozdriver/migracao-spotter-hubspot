@@ -24,6 +24,7 @@ if (HEADERS.DEALS_LINE_ITEMS.join(',') !== EXPECTED_HEADERS.DEALS_LINE_ITEMS) th
 //region Type Definitions
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost';
+export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: any[] }
 interface SpotterLead { id: number; lead?: string; organizationId?: number | null; website?: string | null; source?: { value?: string }; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
@@ -104,6 +105,7 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
 
 export async function exportDataForMode(
   mode: ExportMode,
+  entities: ExportableEntity[],
   token: string,
   baseUrl: string
 ): Promise<{ fileContent: Buffer; fileName: string }> {
@@ -112,16 +114,23 @@ export async function exportDataForMode(
   const logMessages: string[] = [];
   const log: LogCallback = (message) => logMessages.push(`[${new Date().toISOString()}] ${message}`);
 
-  log(`Iniciando exportação no modo: ${mode}`);
+  log(`Iniciando exportação no modo: ${mode} para as entidades: ${entities.join(', ')}`);
 
   if (mode === 'sold') {
-    log('Gerando arquivo de empresas...');
-    const { content: companiesCsv, fileName: companiesFileName } = await generateCompaniesCsv(token, baseUrl, log);
-    zip.file(companiesFileName, companiesCsv);
-    log(`Arquivo ${companiesFileName} adicionado ao zip.`);
-
-    // TODO: Implementar e adicionar outros arquivos (contatos, negócios) aqui.
-
+    if (entities.includes('companies')) {
+        log('Gerando arquivo de empresas...');
+        const { content: companiesCsv, fileName: companiesFileName } = await generateCompaniesCsv(token, baseUrl, log);
+        zip.file(companiesFileName, companiesCsv);
+        log(`Arquivo ${companiesFileName} adicionado ao zip.`);
+    }
+    if (entities.includes('contacts')) {
+        log('AVISO: A exportação de contatos ainda não foi implementada.');
+        // Placeholder: zip.file('contacts_placeholder.txt', 'Não implementado.');
+    }
+    if (entities.includes('deals_line_items')) {
+        log('AVISO: A exportação de negócios + itens de linha ainda não foi implementada.');
+        // Placeholder: zip.file('deals_line_items_placeholder.txt', 'Não implementado.');
+    }
   } else {
     const errorMessage = `O modo '${mode}' ainda não está implementado.`;
     log(`ERRO: ${errorMessage}`);
