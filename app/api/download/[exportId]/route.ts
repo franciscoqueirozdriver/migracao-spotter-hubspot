@@ -1,6 +1,8 @@
 // app/api/download/[exportId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { getExport, isBlobStorage } from '@/lib/exportStorage';
+import { getTmpExport } from '@/lib/exportStorage';
+
+const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 
 export async function GET(
   request: NextRequest,
@@ -8,21 +10,21 @@ export async function GET(
 ) {
   const exportId = params.exportId;
   if (!exportId) {
-    return new NextResponse('Export ID inválido.', { status: 400 });
+    return new NextResponse('Referência de download inválida.', { status: 400 });
   }
 
-  // In a real Blob storage scenario, the exportId would be the full URL
-  if (isBlobStorage) {
-    if (URL.canParse(exportId) && new URL(exportId).hostname.endsWith('.blob.vercel-storage.com')) {
-      return NextResponse.redirect(exportId);
+  // In production, the exportId is expected to be a full, encoded URL to a Vercel Blob.
+  if (isProduction) {
+    const decodedUrl = decodeURIComponent(exportId);
+    if (URL.canParse(decodedUrl) && new URL(decodedUrl).hostname.endsWith('.blob.vercel-storage.com')) {
+      return NextResponse.redirect(decodedUrl);
     }
-    // Fallback for safety, though it shouldn't be reached if the frontend gets the right URL
-    return new NextResponse('URL de download inválida.', { status: 400 });
+    return new NextResponse('URL de download inválida ou malformada.', { status: 400 });
   }
 
-  // Handle /tmp storage for local development
+  // In local development, the exportId is a UUID used to find a file in /tmp.
   try {
-    const result = await getExport(exportId);
+    const result = await getTmpExport(exportId);
     if (!result) {
       return new NextResponse('Arquivo de exportação não encontrado ou expirado.', { status: 404 });
     }

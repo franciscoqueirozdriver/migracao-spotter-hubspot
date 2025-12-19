@@ -7,12 +7,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const mode = (searchParams.get('mode') ?? 'sold') as ExportMode;
+  // The UI is now single-select, so we don't expect a comma-separated list
   const entity = searchParams.get('export') as ExportableEntity | null;
 
-  // Basic validation
   if (!entity) {
     return new Response(JSON.stringify({ message: 'Nenhuma entidade para exportação foi fornecida.' }), { status: 400 });
   }
+
   const validModes: ExportMode[] = ['sold', 'inProgress', 'lost'];
   if (!validModes.includes(mode)) {
     return new Response(JSON.stringify({ message: 'Modo inválido ou não suportado.' }), { status: 400 });
@@ -22,6 +23,11 @@ export async function GET(request: NextRequest) {
   const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
   if (!token) {
     return new Response(JSON.stringify({ message: 'Token de autenticação do Spotter não configurado.' }), { status: 500 });
+  }
+
+  // Enforce Blob token in production, but outside the stream to fail fast.
+  if ((process.env.VERCEL === '1' || process.env.NODE_ENV === 'production') && !process.env.BLOB_READ_WRITE_TOKEN) {
+      return new Response(JSON.stringify({ message: 'Erro de configuração do servidor: BLOB_READ_WRITE_TOKEN não está definido.' }), { status: 500 });
   }
 
   const stream = new ReadableStream({
@@ -36,6 +42,7 @@ export async function GET(request: NextRequest) {
       try {
         const { downloadRef } = await exportDataForMode(mode, entity, token, baseUrl, sendLog);
 
+        // The `downloadRef` is the public URL from Vercel Blob or the tmp exportId
         const doneMessage = { type: 'done', exportId: downloadRef };
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneMessage)}\n\n`));
         controller.close();

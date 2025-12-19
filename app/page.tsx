@@ -61,7 +61,7 @@ export default function HomePage() {
     setError(null);
     setLogs([]);
 
-    // We need to pass a single entity for now, will be fixed in the exporter refactor
+    // For now, we only support one entity at a time in the backend logic for this fix
     const entity = entitiesToExport[0];
     const apiUrl = `/api/export?mode=${mode}&export=${entity}`;
     const eventSource = new EventSource(apiUrl);
@@ -77,8 +77,9 @@ export default function HomePage() {
         eventSource.close();
         setIsLoading(false);
         if (data.exportId) {
-            setLogs(prev => [...prev, `ID da execução/URL: ${data.exportId}. Iniciando download...`]);
-            window.location.href = `/api/download/${data.exportId}`;
+            setLogs(prev => [...prev, `Referência para download: ${data.exportId}. Iniciando...`]);
+            // IMPORTANT: Encode the exportId, as it can be a full URL
+            window.location.href = `/api/download/${encodeURIComponent(data.exportId)}`;
         } else {
             setLogs(prev => [...prev, "Nenhum arquivo válido foi gerado. Download não iniciado."]);
         }
