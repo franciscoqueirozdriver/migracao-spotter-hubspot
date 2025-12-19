@@ -1,107 +1,75 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 
 type ExportMode = 'sold' | 'inProgress' | 'lost';
-type ExportEntity = 'companies' | 'contacts' | 'deals_line_items';
 
-const modeConfig: Record<ExportMode, { label: string; description: string; supportedEntities: ExportEntity[] }> = {
+const modeConfig: Record<ExportMode, { label: string; description: string; included: string[] }> = {
   sold: {
     label: 'Vendas concluídas',
-    description: 'Empresas, Contatos, Negócios e Itens de Linha de vendas a partir do endpoint LeadsSold.',
-    supportedEntities: ['companies', 'contacts', 'deals_line_items'],
+    description: 'Histórico financeiro: Empresas, Contatos, Negócios e Itens de Linha.',
+    included: ['Empresas', 'Contatos', 'Negócios + Itens de Linha'],
   },
   inProgress: {
-    label: 'Em andamento',
-    description: 'Funcionalidade ainda não implementada.',
-    supportedEntities: [],
+    label: 'Em andamento (Não implementado)',
+    description: 'Pipeline ativo: Empresas, Contatos e Negócios sem itens de linha.',
+    included: ['Empresas', 'Contatos', 'Negócios'],
   },
   lost: {
-    label: 'Perdidos',
-    description: 'Funcionalidade ainda não implementada.',
-    supportedEntities: [],
+    label: 'Perdidos (Não implementado)',
+    description: 'Histórico comercial: Empresas, Contatos e Negócios perdidos.',
+    included: ['Empresas', 'Contatos', 'Negócios'],
   },
-};
-
-const entityLabels: Record<ExportEntity, string> = {
-    companies: 'Empresas',
-    contacts: 'Contatos',
-    deals_line_items: 'Negócios + Itens de Linha',
 };
 
 export default function HomePage() {
   const [mode, setMode] = useState<ExportMode>('sold');
-  const [selectedEntities, setSelectedEntities] = useState<Record<ExportEntity, boolean>>({
-    companies: true,
-    contacts: false,
-    deals_line_items: false,
-  });
   const [isLoading, setIsLoading] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const logContainerRef = useRef<HTMLPreElement>(null);
 
-  const handleEntityChange = (entity: ExportEntity) => {
-    setSelectedEntities(prev => ({ ...prev, [entity]: !prev[entity] }));
-  };
-
-  const startExport = () => {
-    const entitiesToExport = Object.entries(selectedEntities)
-      .filter(([_, isSelected]) => isSelected)
-      .map(([entity]) => entity as ExportEntity);
-
-    if (entitiesToExport.length === 0) {
-      setError('Selecione pelo menos um arquivo para gerar.');
-      return;
-    }
-
+  const startExport = async () => {
     if (isLoading) return;
 
     setIsLoading(true);
     setError(null);
-    setLogs([]);
 
-    // For now, we only support one entity at a time in the backend logic for this fix
-    const entity = entitiesToExport[0];
-    const apiUrl = `/api/export?mode=${mode}&export=${entity}`;
-    const eventSource = new EventSource(apiUrl);
+    try {
+      const apiUrl = `/api/export?mode=${mode}`;
+      const response = await fetch(apiUrl);
 
-    eventSource.onopen = () => setLogs(prev => [...prev, `Conexão estabelecida. Iniciando exportação...`]);
-
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'log') {
-        setLogs(prev => [...prev, data.message]);
-      } else if (data.type === 'done') {
-        setLogs(prev => [...prev, 'Processamento no servidor concluído.']);
-        eventSource.close();
-        setIsLoading(false);
-        if (data.exportId) {
-            setLogs(prev => [...prev, `Referência para download: ${data.exportId}. Iniciando...`]);
-            // IMPORTANT: Encode the exportId, as it can be a full URL
-            window.location.href = `/api/download/${encodeURIComponent(data.exportId)}`;
-        } else {
-            setLogs(prev => [...prev, "Nenhum arquivo válido foi gerado. Download não iniciado."]);
-        }
-      } else if (data.type === 'error') {
-        setError(data.message);
-        setIsLoading(false);
-        eventSource.close();
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || `O servidor respondeu com o status ${response.status}`);
       }
-    };
 
-    eventSource.onerror = () => {
-      setError('Falha na conexão de streaming com o servidor.');
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get('content-disposition');
+      let fileName = `spotter_export_${mode}.zip`; // Fallback filename
+
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="([^"]+)"/);
+        if (match && match[1]) {
+          fileName = match[1];
+        }
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
+    } finally {
       setIsLoading(false);
-      eventSource.close();
-    };
+    }
   };
 
-  useEffect(() => {
-    logContainerRef.current?.scrollTo(0, logContainerRef.current.scrollHeight);
-  }, [logs]);
-
-  const isAnythingSelected = Object.values(selectedEntities).some(Boolean);
+  const isModeImplemented = mode === 'sold';
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
@@ -114,46 +82,60 @@ export default function HomePage() {
           <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             1. O que você deseja importar?
           </label>
-          <select id="import-mode" value={mode} onChange={(e) => setMode(e.target.value as ExportMode)} disabled={isLoading} style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}>
-            {Object.keys(modeConfig).map(modeKey => (
-              <option key={modeKey} value={modeKey}>{modeConfig[modeKey as ExportMode].label}</option>
+          <select
+            id="import-mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as ExportMode)}
+            disabled={isLoading}
+            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
+          >
+            {Object.entries(modeConfig).map(([key, config]) => (
+              <option key={key} value={key}>{config.label}</option>
             ))}
           </select>
-          <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>{modeConfig[mode].description}</p>
+          <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>
+            {modeConfig[mode].description}
+          </p>
         </div>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>2. Selecione os Arquivos para Gerar</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
-            {Object.keys(entityLabels).map(entityStr => {
-              const entity = entityStr as ExportEntity;
-              const isSupported = modeConfig[mode].supportedEntities.includes(entity);
-              return (
-                <div key={entity} style={{ display: 'flex', alignItems: 'center', opacity: isSupported ? 1 : 0.5 }}>
-                  <input type="checkbox" id={`checkbox-${entity}`} checked={selectedEntities[entity]} onChange={() => handleEntityChange(entity)} disabled={isLoading || !isSupported} style={{ marginRight: '0.5rem', height: '18px', width: '18px' }} />
-                  <label htmlFor={`checkbox-${entity}`}>{entityLabels[entity]}</label>
-                  {!isSupported && <span style={{ fontSize: '12px', color: '#999', marginLeft: '1rem' }}>(Indisponível neste modo)</span>}
-                </div>
-              );
-            })}
-          </div>
+          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>
+            2. Arquivos Incluídos na Exportação
+          </h3>
+          <ul style={{ listStyleType: 'none', paddingLeft: 0, marginTop: '1rem' }}>
+            {modeConfig[mode].included.map(item => (
+              <li key={item} style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center' }}>
+                <span style={{ color: '#28a745', marginRight: '0.5rem', fontWeight: 'bold' }}>✓</span>
+                {item}
+              </li>
+            ))}
+          </ul>
         </div>
 
-        <button onClick={startExport} disabled={isLoading || !isAnythingSelected} style={{ width: '100%', padding: '12px 20px', fontSize: '18px', cursor: (isLoading || !isAnythingSelected) ? 'not-allowed' : 'pointer', backgroundColor: (isLoading || !isAnythingSelected) ? '#ccc' : '#28a745', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}>
-          {isLoading ? 'Exportando...' : `Gerar e Baixar Arquivo(s)`}
+        <button
+          onClick={startExport}
+          disabled={isLoading || !isModeImplemented}
+          style={{
+            width: '100%',
+            padding: '12px 20px',
+            fontSize: '18px',
+            cursor: (isLoading || !isModeImplemented) ? 'not-allowed' : 'pointer',
+            backgroundColor: (isLoading || !isModeImplemented) ? '#ccc' : '#28a745',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            fontWeight: 'bold'
+          }}
+        >
+          {isLoading ? 'Exportando...' : `Gerar e Baixar Arquivos`}
         </button>
       </div>
 
-       {(logs.length > 0 || isLoading) && (
-        <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#fff' }}>
-          <h2>Logs da Execução</h2>
-          <pre ref={logContainerRef} style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '400px', overflowY: 'auto', margin: 0, fontFamily: 'monospace', fontSize: '14px', backgroundColor: '#f5f5f5', padding: '1rem', borderRadius: '5px' }}>
-            {logs.join('\n')}
-          </pre>
+      {error && (
+        <div style={{ color: 'red', marginTop: '1.5rem', border: '1px solid red', padding: '1rem', borderRadius: '5px', backgroundColor: '#ffebee' }}>
+          <strong>Erro:</strong> {error}
         </div>
       )}
-
-      {error && <p style={{ color: 'red', marginTop: '1.5rem', border: '1px solid red', padding: '1rem', borderRadius: '5px' }}><strong>Erro:</strong> {error}</p>}
     </div>
   );
 }

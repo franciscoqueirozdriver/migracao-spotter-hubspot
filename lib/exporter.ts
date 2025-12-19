@@ -1,8 +1,6 @@
 // lib/exporter.ts
 import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
-import { v4 as uuidv4 } from 'uuid';
-import { saveExport } from './exportStorage';
 import JSZip from 'jszip';
 
 //region --- HEADER INTEGRITY CHECK ---
@@ -18,7 +16,6 @@ const HEADERS = {
   DEALS_LINE_ITEMS: EXPECTED_HEADERS.DEALS_LINE_ITEMS.split(','),
 };
 
-// Runtime assertion to prevent regressions
 if (HEADERS.COMPANIES.join(',') !== EXPECTED_HEADERS.COMPANIES) throw new Error("CRITICAL: Companies header mismatch!");
 if (HEADERS.CONTACTS.join(',') !== EXPECTED_HEADERS.CONTACTS) throw new Error("CRITICAL: Contacts header mismatch!");
 if (HEADERS.DEALS_LINE_ITEMS.join(',') !== EXPECTED_HEADERS.DEALS_LINE_ITEMS) throw new Error("CRITICAL: Deals header mismatch!");
@@ -27,13 +24,11 @@ if (HEADERS.DEALS_LINE_ITEMS.join(',') !== EXPECTED_HEADERS.DEALS_LINE_ITEMS) th
 //region Type Definitions
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost';
-export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: any[] }
 interface SpotterLead { id: number; lead?: string; organizationId?: number | null; website?: string | null; source?: { value?: string }; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
-// ... (rest of the file remains the same)
 //endregion
-// The rest of the file is unchanged, just pasting it back in.
+
 const normalizeDomain = (url?: string | null) => {
     if (!url) return '';
     try {
@@ -48,11 +43,15 @@ const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAl
 const fetchOrganizations = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
 
 async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<{ content: string, fileName: string }> {
+    log('Buscando vendas (LeadsSold)...');
     const sales = await fetchLeadsSold(token, baseUrl, log);
     const soldLeadIds = new Set(sales.map(s => s.leadId));
+    log(`Total de ${sales.length} vendas encontradas.`);
 
+    log('Buscando todos os leads para mapeamento...');
     const allLeads = await fetchLeads(token, baseUrl, log);
     const leadsMap = new Map(allLeads.map(l => [l.id, l]));
+    log(`Total de ${allLeads.length} leads encontrados.`);
 
     const validOrgIds = new Set<number>();
     soldLeadIds.forEach(leadId => {
@@ -60,15 +59,20 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
         if (lead?.organizationId) {
             validOrgIds.add(lead.organizationId);
         } else {
-            log(`[ORG_MISSING] leadId=${leadId} lead='${lead?.lead}'`);
+            log(`[AVISO] Lead vendido (id=${leadId}, name='${lead?.lead}') não possui organizationId e será ignorado.`);
         }
     });
+    log(`Mapeadas ${validOrgIds.size} organizações únicas a partir dos leads vendidos.`);
 
+    log('Buscando todas as organizações...');
     const allOrgs = await fetchOrganizations(token, baseUrl, log);
     const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
+    log(`Total de ${allOrgs.length} organizações encontradas.`);
 
     const validRows: any[] = [];
+    const invalidRows: any[] = [];
     let missingWebsiteCount = 0;
+
     validOrgIds.forEach(orgId => {
         const org = orgsMap.get(orgId);
         const lead = allLeads.find(l => l.organizationId === orgId);
@@ -87,11 +91,12 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
                 'spotter_organization_id': org.id
             });
         } else {
-             log(`[ORG_NOT_FOUND] orgId=${orgId}`);
+             log(`[ERRO] Organização (id=${orgId}) encontrada nos leads, mas não encontrada na lista de organizações. Será descartada.`);
+             invalidRows.push({ orgId, reason: 'Organização não encontrada' });
         }
     });
 
-    log(`[DOMAIN_FROM_LEADS_ONLY] missing=${missingWebsiteCount} total=${validRows.length}`);
+    log(`Processamento de empresas concluído. Válidas=${validRows.length}, Inválidas=${invalidRows.length}, Domínios ausentes=${missingWebsiteCount}`);
 
     const content = buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
     return { content, fileName: 'companies.csv' };
@@ -99,38 +104,38 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
 
 export async function exportDataForMode(
   mode: ExportMode,
-  entity: ExportableEntity,
   token: string,
-  baseUrl: string,
-  log: LogCallback
-): Promise<{ downloadRef: string }> {
-    const exportId = uuidv4();
-    let fileContent: string = '';
-    let fileName: string = '';
+  baseUrl: string
+): Promise<{ fileContent: Buffer; fileName: string }> {
+  const zip = new JSZip();
+  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+  const logMessages: string[] = [];
+  const log: LogCallback = (message) => logMessages.push(`[${new Date().toISOString()}] ${message}`);
 
-    if (mode !== 'sold') {
-        throw new Error(`O modo '${mode}' ainda não está implementado.`);
-    }
+  log(`Iniciando exportação no modo: ${mode}`);
 
-    switch (entity) {
-        case 'companies':
-            const comp = await generateCompaniesCsv(token, baseUrl, log);
-            fileContent = comp.content;
-            fileName = `${exportId}_${comp.fileName}`;
-            break;
-        default:
-             fileContent = `Entidade ${entity} não implementada.`;
-             fileName = `${exportId}_error.txt`;
-    }
+  if (mode === 'sold') {
+    log('Gerando arquivo de empresas...');
+    const { content: companiesCsv, fileName: companiesFileName } = await generateCompaniesCsv(token, baseUrl, log);
+    zip.file(companiesFileName, companiesCsv);
+    log(`Arquivo ${companiesFileName} adicionado ao zip.`);
 
-    if (!fileContent) {
-        log('Nenhum dado válido foi gerado.');
-        throw new Error('Nenhum dado para exportar.');
-    }
+    // TODO: Implementar e adicionar outros arquivos (contatos, negócios) aqui.
 
-    const fileBuffer = Buffer.from(fileContent, 'utf-8');
-    const downloadRef = await saveExport(exportId, fileName, fileBuffer);
+  } else {
+    const errorMessage = `O modo '${mode}' ainda não está implementado.`;
+    log(`ERRO: ${errorMessage}`);
+    throw new Error(errorMessage);
+  }
 
-    log(`Exportação concluída. Referência para download: ${downloadRef}`);
-    return { downloadRef };
+  log('Gerando arquivo de log da execução...');
+  const logContent = logMessages.join('\n');
+  zip.file('run_log.txt', logContent);
+
+  log('Compactando arquivos...');
+  const fileContent = await zip.generateAsync({ type: 'nodebuffer' });
+  const fileName = `spotter_export_${mode}_${runId}.zip`;
+  log('Exportação concluída.');
+
+  return { fileContent, fileName };
 }
