@@ -26,7 +26,7 @@ export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: any[] }
-interface SpotterLead { id: number; lead?: string; organizationId?: number | null; website?: string | null; source?: { value?: string }; }
+interface SpotterLead { id: number; lead?: string; organizationId?: number | null; website?: string | null; cpfCnpj?: string; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
 //endregion
 
@@ -44,91 +44,110 @@ const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAl
 const fetchOrganizations = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
 
 async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<{ content: string, fileName: string }> {
-  log('Buscando vendas (LeadsSold)...');
   const sales = await fetchLeadsSold(token, baseUrl, log);
   const soldLeadIds = new Set(sales.map(s => s.leadId));
-  log(`Total de ${sales.length} vendas encontradas (${soldLeadIds.size} leads únicos).`);
 
-  log('Buscando todos os leads para mapeamento...');
   const allLeads = await fetchLeads(token, baseUrl, log);
   const leadsMap = new Map(allLeads.map(l => [l.id, l]));
-  log(`Total de ${allLeads.length} leads encontrados.`);
 
-  log('Buscando todas as organizações para preenchimento de dados adicionais...');
   const allOrgs = await fetchOrganizations(token, baseUrl, log);
   const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
-  log(`Total de ${allOrgs.length} organizações encontradas.`);
 
-  const validRows: any[] = [];
-  const invalidRows: { leadId: number; reason: string }[] = [];
-  let websiteFromLeadCount = 0;
-  let missingWebsiteCount = 0;
-  let nameFromOrgCount = 0;
-  let nameFromLeadCount = 0;
+  const normalizeCnpj = (v?: string) => (v ?? '').replace(/\D/g, '');
+  const isPJ = (cnpjDigits: string) => cnpjDigits.length === 14;
+
+  const companyKey = (lead: SpotterLead, org?: SpotterOrganization) => {
+    const cnpj = normalizeCnpj(org?.cpfCnpj ?? lead?.cpfCnpj);
+    if (org?.id) return `org:${org.id}`;
+    if (isPJ(cnpj)) return `cnpj:${cnpj}`;
+    return `lead:${lead.id}`;
+  };
+
+  const score = (lead: SpotterLead, org?: SpotterOrganization) => {
+    let s = 0;
+    const leadWebsite = (lead.website ?? '').trim();
+    if (leadWebsite) s += 50;
+
+    const cnpj = normalizeCnpj(org?.cpfCnpj ?? lead?.cpfCnpj);
+    if (isPJ(cnpj)) s += 20;
+
+    if ((org?.street ?? '').trim()) s += 5;
+    if ((org?.city ?? '').trim()) s += 3;
+    if ((org?.state ?? '').trim()) s += 2;
+
+    return s;
+  };
+
+  const chosen = new Map<string, { lead: SpotterLead; org?: SpotterOrganization; s: number }>();
+
+  let leadsMissing = 0;
+  let websitesFromLead = 0;
+  let websitesEmpty = 0;
+  let duplicatesCollapsed = 0;
 
   soldLeadIds.forEach(leadId => {
     const lead = leadsMap.get(leadId);
-
     if (!lead) {
-      log(`[LEAD_NOT_FOUND] Lead vendido (id=${leadId}) não foi encontrado na lista de /v3/Leads. Será descartado.`);
-      invalidRows.push({ leadId, reason: 'Lead não encontrado' });
-      return; // continue
+      leadsMissing++;
+      log(`[LEAD_NOT_FOUND] Lead vendido (id=${leadId}) não foi encontrado em /v3/Leads. Descartado.`);
+      return;
     }
 
-    // REGRA: website vem SOMENTE do Lead
-    const rawWebsite = (lead.website ?? '').trim();
-    const domain = normalizeDomain(rawWebsite);
+    const leadWebsite = (lead.website ?? '').trim();
+    if (leadWebsite) websitesFromLead++;
+    else websitesEmpty++;
 
-    if (rawWebsite) {
-      websiteFromLeadCount++;
+    const org = lead.organizationId ? orgsMap.get(lead.organizationId) : undefined;
+
+    const key = companyKey(lead, org);
+    const s = score(lead, org);
+
+    const prev = chosen.get(key);
+    if (!prev) {
+      chosen.set(key, { lead, org, s });
     } else {
-      missingWebsiteCount++;
+      duplicatesCollapsed++;
+      if (s > prev.s) {
+        chosen.set(key, { lead, org, s });
+      } else if (s === prev.s) {
+        const prevHasSite = !!(prev.lead.website ?? '').trim();
+        const curHasSite = !!leadWebsite;
+        if (curHasSite && !prevHasSite) chosen.set(key, { lead, org, s });
+      }
     }
+  });
 
-    // Se existir org, usa para preencher campos estruturais; se não, exporta mesmo assim.
-    const orgId = lead.organizationId;
-    const org = (orgId ? orgsMap.get(orgId) : undefined);
+  const rows: any[] = [];
+  chosen.forEach(({ lead, org }) => {
+    const websiteRaw = (lead.website ?? '').trim();
+    const domain = normalizeDomain(websiteRaw);
 
-    // Nome: prioriza org.name quando existir; senão usa lead.lead
-    const companyName = (org?.name ?? lead.lead ?? '').trim();
-    if (org?.name) {
-      nameFromOrgCount++;
-    } else {
-      nameFromLeadCount++;
-    }
-
-    if (!companyName) {
-        log(`[NOME_AUSENTE] Lead (id=${leadId}) e Organização (id=${orgId}) não possuem nome. Será descartado.`);
-        invalidRows.push({ leadId, reason: 'Nome da empresa ausente' });
-        return; // continue
-    }
-
-    validRows.push({
-      'Nome da empresa': companyName,
+    rows.push({
+      'Nome da empresa': org?.name ?? lead.lead ?? '',
       'Nome de domínio da empresa': domain,
-      'CNPJ': org?.cpfCnpj,
-      'Endereço': org?.street,
-      'Número': org?.number,
-      'Complemento': org?.complement,
-      'Bairro': org?.neighborhood,
-      'Código postal': org?.zipCode,
-      'Cidade': org?.city,
-      'Estado/Região': org?.state,
-      'País/Região': org?.country,
-      'spotter_organization_id': org?.id ?? orgId ?? '',
+      'CNPJ': org?.cpfCnpj ?? lead?.cpfCnpj ?? '',
+      'Endereço': org?.street ?? '',
+      'Número': org?.number ?? '',
+      'Complemento': org?.complement ?? '',
+      'Bairro': org?.neighborhood ?? '',
+      'Código postal': org?.zipCode ?? '',
+      'Cidade': org?.city ?? '',
+      'Estado/Região': org?.state ?? '',
+      'País/Região': org?.country ?? '',
+      'spotter_organization_id': org?.id ?? ''
     });
   });
 
-  log('--- Estatísticas de Geração de Empresas ---');
-  log(`- Empresas Válidas para Exportação: ${validRows.length}`);
-  log(`- Leads Descartados: ${invalidRows.length}`);
-  log(`- Nomes Obtidos de Organizations: ${nameFromOrgCount}`);
-  log(`- Nomes Obtidos de Leads (fallback): ${nameFromLeadCount}`);
-  log(`- Websites Obtidos de Leads: ${websiteFromLeadCount}`);
-  log(`- Registros Sem Website: ${missingWebsiteCount}`);
-  log('-----------------------------------------');
+  log(`--- Estatísticas de Geração de Empresas (Dedupe ON) ---`);
+  log(`- Leads vendidos únicos: ${soldLeadIds.size}`);
+  log(`- Empresas exportadas (após dedupe): ${rows.length}`);
+  log(`- Leads não encontrados: ${leadsMissing}`);
+  log(`- Duplicatas colapsadas: ${duplicatesCollapsed}`);
+  log(`- Websites presentes no Lead: ${websitesFromLead}`);
+  log(`- Websites vazios no Lead: ${websitesEmpty}`);
+  log(`------------------------------------------------------`);
 
-  const content = buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
+  const content = buildCsv(HEADERS.COMPANIES, rows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
   return { content, fileName: 'companies.csv' };
 }
 
