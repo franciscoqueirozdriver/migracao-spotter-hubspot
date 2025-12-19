@@ -44,63 +44,92 @@ const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAl
 const fetchOrganizations = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
 
 async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<{ content: string, fileName: string }> {
-    log('Buscando vendas (LeadsSold)...');
-    const sales = await fetchLeadsSold(token, baseUrl, log);
-    const soldLeadIds = new Set(sales.map(s => s.leadId));
-    log(`Total de ${sales.length} vendas encontradas.`);
+  log('Buscando vendas (LeadsSold)...');
+  const sales = await fetchLeadsSold(token, baseUrl, log);
+  const soldLeadIds = new Set(sales.map(s => s.leadId));
+  log(`Total de ${sales.length} vendas encontradas (${soldLeadIds.size} leads únicos).`);
 
-    log('Buscando todos os leads para mapeamento...');
-    const allLeads = await fetchLeads(token, baseUrl, log);
-    const leadsMap = new Map(allLeads.map(l => [l.id, l]));
-    log(`Total de ${allLeads.length} leads encontrados.`);
+  log('Buscando todos os leads para mapeamento...');
+  const allLeads = await fetchLeads(token, baseUrl, log);
+  const leadsMap = new Map(allLeads.map(l => [l.id, l]));
+  log(`Total de ${allLeads.length} leads encontrados.`);
 
-    const validOrgIds = new Set<number>();
-    soldLeadIds.forEach(leadId => {
-        const lead = leadsMap.get(leadId);
-        if (lead?.organizationId) {
-            validOrgIds.add(lead.organizationId);
-        } else {
-            log(`[AVISO] Lead vendido (id=${leadId}, name='${lead?.lead}') não possui organizationId e será ignorado.`);
-        }
+  log('Buscando todas as organizações para preenchimento de dados adicionais...');
+  const allOrgs = await fetchOrganizations(token, baseUrl, log);
+  const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
+  log(`Total de ${allOrgs.length} organizações encontradas.`);
+
+  const validRows: any[] = [];
+  const invalidRows: { leadId: number; reason: string }[] = [];
+  let websiteFromLeadCount = 0;
+  let missingWebsiteCount = 0;
+  let nameFromOrgCount = 0;
+  let nameFromLeadCount = 0;
+
+  soldLeadIds.forEach(leadId => {
+    const lead = leadsMap.get(leadId);
+
+    if (!lead) {
+      log(`[LEAD_NOT_FOUND] Lead vendido (id=${leadId}) não foi encontrado na lista de /v3/Leads. Será descartado.`);
+      invalidRows.push({ leadId, reason: 'Lead não encontrado' });
+      return; // continue
+    }
+
+    // REGRA: website vem SOMENTE do Lead
+    const rawWebsite = (lead.website ?? '').trim();
+    const domain = normalizeDomain(rawWebsite);
+
+    if (rawWebsite) {
+      websiteFromLeadCount++;
+    } else {
+      missingWebsiteCount++;
+    }
+
+    // Se existir org, usa para preencher campos estruturais; se não, exporta mesmo assim.
+    const orgId = lead.organizationId;
+    const org = (orgId ? orgsMap.get(orgId) : undefined);
+
+    // Nome: prioriza org.name quando existir; senão usa lead.lead
+    const companyName = (org?.name ?? lead.lead ?? '').trim();
+    if (org?.name) {
+      nameFromOrgCount++;
+    } else {
+      nameFromLeadCount++;
+    }
+
+    if (!companyName) {
+        log(`[NOME_AUSENTE] Lead (id=${leadId}) e Organização (id=${orgId}) não possuem nome. Será descartado.`);
+        invalidRows.push({ leadId, reason: 'Nome da empresa ausente' });
+        return; // continue
+    }
+
+    validRows.push({
+      'Nome da empresa': companyName,
+      'Nome de domínio da empresa': domain,
+      'CNPJ': org?.cpfCnpj,
+      'Endereço': org?.street,
+      'Número': org?.number,
+      'Complemento': org?.complement,
+      'Bairro': org?.neighborhood,
+      'Código postal': org?.zipCode,
+      'Cidade': org?.city,
+      'Estado/Região': org?.state,
+      'País/Região': org?.country,
+      'spotter_organization_id': org?.id ?? orgId ?? '',
     });
-    log(`Mapeadas ${validOrgIds.size} organizações únicas a partir dos leads vendidos.`);
+  });
 
-    log('Buscando todas as organizações...');
-    const allOrgs = await fetchOrganizations(token, baseUrl, log);
-    const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
-    log(`Total de ${allOrgs.length} organizações encontradas.`);
+  log('--- Estatísticas de Geração de Empresas ---');
+  log(`- Empresas Válidas para Exportação: ${validRows.length}`);
+  log(`- Leads Descartados: ${invalidRows.length}`);
+  log(`- Nomes Obtidos de Organizations: ${nameFromOrgCount}`);
+  log(`- Nomes Obtidos de Leads (fallback): ${nameFromLeadCount}`);
+  log(`- Websites Obtidos de Leads: ${websiteFromLeadCount}`);
+  log(`- Registros Sem Website: ${missingWebsiteCount}`);
+  log('-----------------------------------------');
 
-    const validRows: any[] = [];
-    const invalidRows: any[] = [];
-    let missingWebsiteCount = 0;
-
-    validOrgIds.forEach(orgId => {
-        const org = orgsMap.get(orgId);
-        const lead = allLeads.find(l => l.organizationId === orgId);
-
-        if (org && org.id && org.name) {
-            const website = lead?.website ?? '';
-            if (!website) {
-                missingWebsiteCount++;
-            }
-            validRows.push({
-                'Nome da empresa': org.name,
-                'Nome de domínio da empresa': normalizeDomain(website),
-                'CNPJ': org.cpfCnpj,
-                'Endereço': org.street, 'Número': org.number, 'Complemento': org.complement, 'Bairro': org.neighborhood,
-                'Código postal': org.zipCode, 'Cidade': org.city, 'Estado/Região': org.state, 'País/Região': org.country,
-                'spotter_organization_id': org.id
-            });
-        } else {
-             log(`[ERRO] Organização (id=${orgId}) encontrada nos leads, mas não encontrada na lista de organizações. Será descartada.`);
-             invalidRows.push({ orgId, reason: 'Organização não encontrada' });
-        }
-    });
-
-    log(`Processamento de empresas concluído. Válidas=${validRows.length}, Inválidas=${invalidRows.length}, Domínios ausentes=${missingWebsiteCount}`);
-
-    const content = buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
-    return { content, fileName: 'companies.csv' };
+  const content = buildCsv(HEADERS.COMPANIES, validRows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
+  return { content, fileName: 'companies.csv' };
 }
 
 export async function exportDataForMode(
@@ -125,11 +154,9 @@ export async function exportDataForMode(
     }
     if (entities.includes('contacts')) {
         log('AVISO: A exportação de contatos ainda não foi implementada.');
-        // Placeholder: zip.file('contacts_placeholder.txt', 'Não implementado.');
     }
     if (entities.includes('deals_line_items')) {
         log('AVISO: A exportação de negócios + itens de linha ainda não foi implementada.');
-        // Placeholder: zip.file('deals_line_items_placeholder.txt', 'Não implementado.');
     }
   } else {
     const errorMessage = `O modo '${mode}' ainda não está implementado.`;
