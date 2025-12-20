@@ -15,7 +15,7 @@ export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 interface SpotterLeadSold { leadId: number; }
-interface SpotterLead { id: number; organizationId?: number | null; stage?: { name?: string }; }
+interface SpotterLead { id: number; organizationId?: number | null; stage?: { name?: string }; website?: string | null; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
 //endregion
 
@@ -53,9 +53,10 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
   let discardedLeadNotFound = 0;
   let discardedLeadIsDescartado = 0;
   let discardedLeadMissingOrgId = 0;
-  const validOrganizationIds = new Set<number>();
+  // Mapa para garantir uma empresa por organizationId, mantendo referência ao lead
+  const validLeadsByOrgId = new Map<number, SpotterLead>();
 
-  soldLeadIds.forEach(leadId => { // Correção de Build
+  soldLeadIds.forEach(leadId => {
     const lead = leadsMap.get(leadId);
     if (!lead) {
       discardedLeadNotFound++;
@@ -69,9 +70,12 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
       discardedLeadMissingOrgId++;
       return;
     }
-    validOrganizationIds.add(lead.organizationId);
+    // Adiciona ao mapa apenas se a organização ainda não foi processada
+    if (!validLeadsByOrgId.has(lead.organizationId)) {
+      validLeadsByOrgId.set(lead.organizationId, lead);
+    }
   });
-  log(`Total de organizationId extraídos: ${validOrganizationIds.size}`);
+  log(`Total de organizações únicas a serem buscadas: ${validLeadsByOrgId.size}`);
 
   // 3. Busca das Organizações Finais
   log('Passo 3: Buscando os dados das organizações finais...');
@@ -79,34 +83,31 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
   const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
   log(`Total de organizações encontradas na base: ${allOrgs.length}`);
 
-  const finalCompanies: SpotterOrganization[] = [];
+  const rows: Record<string, any>[] = [];
   let discardedOrgNotFound = 0;
 
-  validOrganizationIds.forEach(orgId => { // Correção de Build
-    const org = orgsMap.get(orgId);
+  validLeadsByOrgId.forEach(lead => {
+    const org = orgsMap.get(lead.organizationId!);
     if (org) {
-      finalCompanies.push(org);
+      rows.push({
+        'Nome da empresa': org.name,
+        'Nome de domínio da empresa': normalizeDomain(lead.website), // Correção: usa o website do Lead
+        'CNPJ': org.cpfCnpj,
+        'Endereço': org.street,
+        'Número': org.number,
+        'Complemento': org.complement,
+        'Bairro': org.neighborhood,
+        'Código postal': org.zipCode,
+        'Cidade': org.city,
+        'Estado/Região': org.state,
+        'País/Região': org.country,
+        'spotter_organization_id': org.id
+      });
     } else {
       discardedOrgNotFound++;
     }
   });
-  log(`Total de empresas únicas exportadas: ${finalCompanies.length}`);
-
-  // Montagem do CSV
-  const rows: Record<string, any>[] = finalCompanies.map(org => ({ // Correção de Build
-    'Nome da empresa': org.name,
-    'Nome de domínio da empresa': normalizeDomain(org.website),
-    'CNPJ': org.cpfCnpj,
-    'Endereço': org.street,
-    'Número': org.number,
-    'Complemento': org.complement,
-    'Bairro': org.neighborhood,
-    'Código postal': org.zipCode,
-    'Cidade': org.city,
-    'Estado/Região': org.state,
-    'País/Região': org.country,
-    'spotter_organization_id': org.id
-  }));
+  log(`Total de empresas únicas exportadas: ${rows.length}`);
 
   // Logs de Auditoria Finais
   log('--- Auditoria da Execução ---');
