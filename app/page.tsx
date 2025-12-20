@@ -7,8 +7,8 @@ type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 
 const entityConfig: Record<ExportableEntity, { label: string }> = {
   companies: { label: 'Empresas' },
-  contacts: { label: 'Contatos' },
-  deals_line_items: { label: 'Negócios + Itens de Linha' },
+  contacts: { label: 'Contatos (Não implementado)' },
+  deals_line_items: { label: 'Negócios + Itens de Linha (Não implementado)' },
 };
 
 const modeConfig: Record<ExportMode, { label: string; description: string; entities: ExportableEntity[] }> = {
@@ -19,73 +19,43 @@ const modeConfig: Record<ExportMode, { label: string; description: string; entit
   },
   inProgress: {
     label: 'Em andamento (Não implementado)',
-    description: 'Pipeline ativo: Empresas, Contatos e Negócios sem itens de linha.',
-    entities: ['companies', 'contacts', 'deals_line_items'], // Assuming deals would be an entity
+    description: 'Pipeline ativo.',
+    entities: [],
   },
   lost: {
     label: 'Perdidos (Não implementado)',
-    description: 'Histórico comercial: Empresas, Contatos e Negócios perdidos.',
-    entities: ['companies', 'contacts', 'deals_line_items'], // Assuming deals would be an entity
+    description: 'Histórico comercial.',
+    entities: [],
   },
-};
-
-const getDefaultSelection = (mode: ExportMode): Record<ExportableEntity, boolean> => {
-  const selection: Partial<Record<ExportableEntity, boolean>> = {};
-  for (const entity of modeConfig[mode].entities) {
-    selection[entity] = true;
-  }
-  return selection as Record<ExportableEntity, boolean>;
 };
 
 export default function HomePage() {
   const [mode, setMode] = useState<ExportMode>('sold');
-  const [selectedEntities, setSelectedEntities] = useState<Record<ExportableEntity, boolean>>(getDefaultSelection(mode));
+  const [selectedEntity, setSelectedEntity] = useState<ExportableEntity>('companies');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSelectedEntities(getDefaultSelection(mode));
-  }, [mode]);
-
-  const handleEntityChange = (entity: ExportableEntity) => {
-    setSelectedEntities(prev => ({ ...prev, [entity]: !prev[entity] }));
-  };
+  const [lastRunLogs, setLastRunLogs] = useState<string | null>(null);
 
   const startExport = async () => {
-    if (isLoading) return;
-
-    const entitiesToExport = Object.entries(selectedEntities)
-      .filter(([_, isSelected]) => isSelected)
-      .map(([entity]) => entity);
-
-    if (entitiesToExport.length === 0) {
-      setError('Selecione pelo menos um tipo de arquivo para exportar.');
-      return;
-    }
+    if (isLoading || !selectedEntity) return;
 
     setIsLoading(true);
     setError(null);
+    setLastRunLogs(null);
 
     try {
-      const apiUrl = `/api/export?mode=${mode}&entities=${entitiesToExport.join(',')}`;
+      const apiUrl = `/api/export?mode=${mode}&entities=${selectedEntity}`;
       const response = await fetch(apiUrl);
+      const data = await response.json();
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || `O servidor respondeu com o status ${response.status}`);
+        throw new Error(data.message || `O servidor respondeu com o status ${response.status}`);
       }
 
-      const blob = await response.blob();
-      const contentDisposition = response.headers.get('content-disposition');
-      let fileName = `spotter_export_${mode}.zip`;
+      const { csvContent, logContent, fileName } = data;
 
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename="([^"]+)"/);
-        if (match && match[1]) {
-          fileName = match[1];
-        }
-      }
-
+      // Iniciar o download do CSV
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -95,6 +65,9 @@ export default function HomePage() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
+      // Exibir os logs na tela
+      setLastRunLogs(logContent);
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
     } finally {
@@ -102,8 +75,7 @@ export default function HomePage() {
     }
   };
 
-  const isModeImplemented = mode === 'sold';
-  const isAnythingSelected = Object.values(selectedEntities).some(Boolean);
+  const isModeImplemented = mode === 'sold' && selectedEntity === 'companies';
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
@@ -114,7 +86,7 @@ export default function HomePage() {
 
         <div style={{ marginBottom: '1.5rem' }}>
           <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            1. O que você deseja importar?
+            1. Escolha o Modo de Exportação
           </label>
           <select
             id="import-mode"
@@ -127,54 +99,56 @@ export default function HomePage() {
               <option key={key} value={key}>{config.label}</option>
             ))}
           </select>
-          <p style={{ fontSize: '14px', color: '#666', marginTop: '0.5rem' }}>
-            {modeConfig[mode].description}
-          </p>
         </div>
 
         <div style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ marginBottom: '0.5rem', borderBottom: '1px solid #ddd', paddingBottom: '0.5rem' }}>
-            2. Selecione os Arquivos para Gerar
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+          <label htmlFor="entity-select" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            2. Escolha o Arquivo para Gerar
+          </label>
+           <select
+            id="entity-select"
+            value={selectedEntity}
+            onChange={(e) => setSelectedEntity(e.target.value as ExportableEntity)}
+            disabled={isLoading || mode !== 'sold'}
+            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
+          >
             {modeConfig[mode].entities.map(entity => (
-              <div key={entity} style={{ display: 'flex', alignItems: 'center' }}>
-                <input
-                  type="checkbox"
-                  id={`checkbox-${entity}`}
-                  checked={selectedEntities[entity] || false}
-                  onChange={() => handleEntityChange(entity)}
-                  disabled={isLoading}
-                  style={{ marginRight: '0.5rem', height: '18px', width: '18px' }}
-                />
-                <label htmlFor={`checkbox-${entity}`}>{entityConfig[entity].label}</label>
-              </div>
+              <option key={entity} value={entity}>{entityConfig[entity].label}</option>
             ))}
-          </div>
+          </select>
         </div>
 
         <button
           onClick={startExport}
-          disabled={isLoading || !isModeImplemented || !isAnythingSelected}
+          disabled={isLoading || !isModeImplemented}
           style={{
             width: '100%',
             padding: '12px 20px',
             fontSize: '18px',
-            cursor: (isLoading || !isModeImplemented || !isAnythingSelected) ? 'not-allowed' : 'pointer',
-            backgroundColor: (isLoading || !isModeImplemented || !isAnythingSelected) ? '#ccc' : '#28a745',
+            cursor: (isLoading || !isModeImplemented) ? 'not-allowed' : 'pointer',
+            backgroundColor: (isLoading || !isModeImplemented) ? '#ccc' : '#28a745',
             color: 'white',
             border: 'none',
             borderRadius: '5px',
             fontWeight: 'bold'
           }}
         >
-          {isLoading ? 'Exportando...' : `Gerar e Baixar Arquivos`}
+          {isLoading ? 'Exportando...' : 'Gerar e Baixar CSV'}
         </button>
       </div>
 
       {error && (
         <div style={{ color: 'red', marginTop: '1.5rem', border: '1px solid red', padding: '1rem', borderRadius: '5px', backgroundColor: '#ffebee' }}>
           <strong>Erro:</strong> {error}
+        </div>
+      )}
+
+      {lastRunLogs && (
+        <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#fff' }}>
+          <h2>Logs da Última Execução</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '400px', overflowY: 'auto', margin: 0, fontFamily: 'monospace', fontSize: '14px', backgroundColor: '#f5f5f5', padding: '1rem', borderRadius: '5px' }}>
+            {lastRunLogs}
+          </pre>
         </div>
       )}
     </div>

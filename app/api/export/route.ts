@@ -8,6 +8,8 @@ const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_
 
 function parseEntities(entitiesParam: string | null): ExportableEntity[] {
   if (!entitiesParam) {
+    // Se nenhum parâmetro for fornecido, podemos assumir um padrão ou lançar um erro.
+    // Para este caso, vamos assumir que o usuário deve sempre fornecer as entidades.
     throw new Error('O parâmetro "entities" é obrigatório.');
   }
   const entities = entitiesParam.split(',');
@@ -35,20 +37,19 @@ export async function GET(request: NextRequest) {
 
     if (!token) {
       return NextResponse.json(
-        { message: 'Erro de configuração do servidor: O token de autenticação do Spotter não está configurado.' },
+        { message: 'Erro de configuração: O token de autenticação do Spotter não está configurado.' },
         { status: 500 }
       );
     }
 
-    const { fileContent, fileName } = await exportDataForMode(mode, entities, token, baseUrl);
+    // A função agora retorna um objeto com o conteúdo do CSV e os logs
+    const { csvContent, logContent, fileName } = await exportDataForMode(mode, entities, token, baseUrl);
 
-    // Cast to 'any' to resolve TypeScript type mismatch between Node.js Buffer and standard Response body
-    return new Response(fileContent as any, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${fileName}"`,
-      },
+    // Retorna a resposta como JSON para o frontend
+    return NextResponse.json({
+      csvContent,
+      logContent,
+      fileName
     });
 
   } catch (error) {

@@ -1,9 +1,8 @@
 // lib/exporter.ts
 import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
-import JSZip from 'jszip';
 
-//region --- HEADER INTEGRITY CHECK ---
+//region --- Tipos e Constantes ---
 const EXPECTED_HEADERS = {
   COMPANIES: 'Nome da empresa,Nome de domínio da empresa,CNPJ,Endereço,Número,Complemento,Bairro,Código postal,Cidade,Estado/Região,País/Região,spotter_organization_id',
   CONTACTS: 'E-mail,Nome,Sobrenome,Cargo,Telefone,Telefone 2,spotter_person_id,spotter_lead_id,spotter_main_contact,spotter_messaging_platform,spotter_messaging_id',
@@ -16,20 +15,15 @@ const HEADERS = {
   DEALS_LINE_ITEMS: EXPECTED_HEADERS.DEALS_LINE_ITEMS.split(','),
 };
 
-if (HEADERS.COMPANIES.join(',') !== EXPECTED_HEADERS.COMPANIES) throw new Error("CRITICAL: Companies header mismatch!");
-if (HEADERS.CONTACTS.join(',') !== EXPECTED_HEADERS.CONTACTS) throw new Error("CRITICAL: Contacts header mismatch!");
-if (HEADERS.DEALS_LINE_ITEMS.join(',') !== EXPECTED_HEADERS.DEALS_LINE_ITEMS) throw new Error("CRITICAL: Deals header mismatch!");
-//endregion
-
-//region Type Definitions
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
-interface SpotterLeadSold { id: number; leadId: number; saleDate: string; products?: any[] }
+interface SpotterLeadSold { id: number; leadId: number; }
 interface SpotterLead { id: number; lead?: string; organizationId?: number | null; website?: string | null; cpfCnpj?: string; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
 //endregion
 
+//region --- Funções de Apoio ---
 const normalizeDomain = (url?: string | null) => {
     if (!url) return '';
     try {
@@ -39,11 +33,17 @@ const normalizeDomain = (url?: string | null) => {
     } catch { return url; }
 };
 
+const normalizeName = (name?: string) => (name ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+//endregion
+
+//region --- Busca de Dados ---
 const fetchLeadsSold = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterLeadSold>(`${baseUrl}/v3/LeadsSold`, token, log);
 const fetchLeads = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
 const fetchOrganizations = (token: string, baseUrl: string, log: LogCallback) => fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
+//endregion
 
-async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<{ content: string, fileName: string }> {
+//region --- Geração de CSV de Empresas (Lógica Principal) ---
+async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<string> {
   const sales = await fetchLeadsSold(token, baseUrl, log);
   const soldLeadIds = new Set(sales.map(s => s.leadId));
 
@@ -53,78 +53,67 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
   const allOrgs = await fetchOrganizations(token, baseUrl, log);
   const orgsMap = new Map(allOrgs.map(org => [org.id, org]));
 
+  //region --- Lógica de Deduplicação e Pontuação ---
   const normalizeCnpj = (v?: string) => (v ?? '').replace(/\D/g, '');
   const isPJ = (cnpjDigits: string) => cnpjDigits.length === 14;
 
   const companyKey = (lead: SpotterLead, org?: SpotterOrganization) => {
+    const orgName = org?.name;
+    const leadName = lead.lead;
     const cnpj = normalizeCnpj(org?.cpfCnpj ?? lead?.cpfCnpj);
+    const normalizedCompanyName = normalizeName(orgName ?? leadName);
+
     if (org?.id) return `org:${org.id}`;
     if (isPJ(cnpj)) return `cnpj:${cnpj}`;
-    return `lead:${lead.id}`;
+    if (normalizedCompanyName) return `name:${normalizedCompanyName}`;
+    return `lead:${lead.id}`; // Último recurso
   };
 
   const score = (lead: SpotterLead, org?: SpotterOrganization) => {
     let s = 0;
-    const leadWebsite = (lead.website ?? '').trim();
-    if (leadWebsite) s += 50;
-
-    const cnpj = normalizeCnpj(org?.cpfCnpj ?? lead?.cpfCnpj);
-    if (isPJ(cnpj)) s += 20;
-
+    if ((lead.website ?? '').trim()) s += 50;
+    if (isPJ(normalizeCnpj(org?.cpfCnpj ?? lead?.cpfCnpj))) s += 20;
     if ((org?.street ?? '').trim()) s += 5;
     if ((org?.city ?? '').trim()) s += 3;
     if ((org?.state ?? '').trim()) s += 2;
-
     return s;
   };
 
   const chosen = new Map<string, { lead: SpotterLead; org?: SpotterOrganization; s: number }>();
+  //endregion
 
-  let leadsMissing = 0;
-  let websitesFromLead = 0;
-  let websitesEmpty = 0;
-  let duplicatesCollapsed = 0;
+  //region --- Estatísticas e Processamento ---
+  let leadsMissing = 0, websitesFromLead = 0, websitesEmpty = 0, duplicatesCollapsed = 0;
 
   soldLeadIds.forEach(leadId => {
     const lead = leadsMap.get(leadId);
     if (!lead) {
       leadsMissing++;
-      log(`[LEAD_NOT_FOUND] Lead vendido (id=${leadId}) não foi encontrado em /v3/Leads. Descartado.`);
+      log(`[LEAD_NOT_FOUND] Lead vendido (id=${leadId}) não foi encontrado. Descartado.`);
       return;
     }
-
-    const leadWebsite = (lead.website ?? '').trim();
-    if (leadWebsite) websitesFromLead++;
-    else websitesEmpty++;
+    if ((lead.website ?? '').trim()) websitesFromLead++; else websitesEmpty++;
 
     const org = lead.organizationId ? orgsMap.get(lead.organizationId) : undefined;
-
     const key = companyKey(lead, org);
     const s = score(lead, org);
-
     const prev = chosen.get(key);
-    if (!prev) {
+
+    if (!prev || s > prev.s || (s === prev.s && !!(lead.website ?? '').trim() && !prev.lead.website)) {
+      if (prev) duplicatesCollapsed++;
       chosen.set(key, { lead, org, s });
     } else {
       duplicatesCollapsed++;
-      if (s > prev.s) {
-        chosen.set(key, { lead, org, s });
-      } else if (s === prev.s) {
-        const prevHasSite = !!(prev.lead.website ?? '').trim();
-        const curHasSite = !!leadWebsite;
-        if (curHasSite && !prevHasSite) chosen.set(key, { lead, org, s });
-      }
     }
   });
+  //endregion
 
+  //region --- Montagem das Linhas Finais ---
   const rows: any[] = [];
   chosen.forEach(({ lead, org }) => {
-    const websiteRaw = (lead.website ?? '').trim();
-    const domain = normalizeDomain(websiteRaw);
-
     rows.push({
       'Nome da empresa': org?.name ?? lead.lead ?? '',
-      'Nome de domínio da empresa': domain,
+      'Nome de domínio da empresa': normalizeDomain(lead.website),
       'CNPJ': org?.cpfCnpj ?? lead?.cpfCnpj ?? '',
       'Endereço': org?.street ?? '',
       'Número': org?.number ?? '',
@@ -137,8 +126,10 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
       'spotter_organization_id': org?.id ?? ''
     });
   });
+  //endregion
 
-  log(`--- Estatísticas de Geração de Empresas (Dedupe ON) ---`);
+  //region --- Logs Finais ---
+  log(`--- Estatísticas de Geração de Empresas (Dedupe Aprimorado) ---`);
   log(`- Leads vendidos únicos: ${soldLeadIds.size}`);
   log(`- Empresas exportadas (após dedupe): ${rows.length}`);
   log(`- Leads não encontrados: ${leadsMissing}`);
@@ -146,36 +137,37 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
   log(`- Websites presentes no Lead: ${websitesFromLead}`);
   log(`- Websites vazios no Lead: ${websitesEmpty}`);
   log(`------------------------------------------------------`);
+  //endregion
 
-  const content = buildCsv(HEADERS.COMPANIES, rows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
-  return { content, fileName: 'companies.csv' };
+  return buildCsv(HEADERS.COMPANIES, rows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h]))));
 }
+//endregion
 
+//region --- Função de Exportação Principal ---
 export async function exportDataForMode(
   mode: ExportMode,
   entities: ExportableEntity[],
   token: string,
   baseUrl: string
-): Promise<{ fileContent: Buffer; fileName: string }> {
-  const zip = new JSZip();
-  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+): Promise<{ csvContent: string, logContent: string, fileName: string }> {
   const logMessages: string[] = [];
   const log: LogCallback = (message) => logMessages.push(`[${new Date().toISOString()}] ${message}`);
 
   log(`Iniciando exportação no modo: ${mode} para as entidades: ${entities.join(', ')}`);
 
+  let csvContent = '';
+  let fileName = 'export.csv'; // Default filename
+
   if (mode === 'sold') {
     if (entities.includes('companies')) {
         log('Gerando arquivo de empresas...');
-        const { content: companiesCsv, fileName: companiesFileName } = await generateCompaniesCsv(token, baseUrl, log);
-        zip.file(companiesFileName, companiesCsv);
-        log(`Arquivo ${companiesFileName} adicionado ao zip.`);
-    }
-    if (entities.includes('contacts')) {
-        log('AVISO: A exportação de contatos ainda não foi implementada.');
-    }
-    if (entities.includes('deals_line_items')) {
-        log('AVISO: A exportação de negócios + itens de linha ainda não foi implementada.');
+        csvContent = await generateCompaniesCsv(token, baseUrl, log);
+        fileName = `empresas_${new Date().toISOString().split('T')[0]}.csv`;
+        log(`Arquivo de empresas gerado com ${csvContent.split('\n').length - 1} registros.`);
+    } else {
+      // Futuramente, outras entidades seriam tratadas aqui
+      log(`AVISO: A entidade '${entities.join(', ')}' não está implementada para geração de CSV único.`);
+      csvContent = 'Nenhuma entidade válida selecionada para exportação.';
     }
   } else {
     const errorMessage = `O modo '${mode}' ainda não está implementado.`;
@@ -183,14 +175,9 @@ export async function exportDataForMode(
     throw new Error(errorMessage);
   }
 
-  log('Gerando arquivo de log da execução...');
   const logContent = logMessages.join('\n');
-  zip.file('run_log.txt', logContent);
-
-  log('Compactando arquivos...');
-  const fileContent = await zip.generateAsync({ type: 'nodebuffer' });
-  const fileName = `spotter_export_${mode}_${runId}.zip`;
   log('Exportação concluída.');
 
-  return { fileContent, fileName };
+  return { csvContent, logContent, fileName };
 }
+//endregion
