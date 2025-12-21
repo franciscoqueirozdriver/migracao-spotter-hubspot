@@ -3,57 +3,48 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exportDataForMode, ExportMode, ExportableEntity } from '@/lib/exporter';
 
 export const dynamic = 'force-dynamic';
-// Try to increase duration on supported plans (Pro/Enterprise).
-// Standard is 10s (Hobby) or 60s (Pro).
-// Setting higher just in case, but code-level timeout is the real safety net.
 export const maxDuration = 300;
 
-const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'leads'];
+const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
 
-function normalizeEntities(input: unknown): string[] {
-  // Aceita: string, string[], ou qualquer coisa (valida)
-  const arr: unknown[] =
-    Array.isArray(input) ? input :
-    typeof input === "string" ? [input] :
-    input == null ? [] :
-    [input];
-
-  // Achata "a,b,c" e remove lixo
-  return arr
-    .flatMap((v) => {
-      if (typeof v !== "string") return [];
-      return v.split(","); // permite entities=a,b,c
-    })
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+function toSingle(value: string | string[] | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const requestedMode = searchParams.get('mode') ?? 'sold';
+    const requestedMode = searchParams.get('mode') ?? 'total';
 
-    // OVERRIDE: Force 'total' mode regardless of what frontend requests (unless it's custom in future).
-    // The user explicitly requested to "forget sold" and prioritize total full export.
-    // We treat 'sold' from UI as an intent to export data, but we fulfill it with the robust 'total' strategy.
-    let mode: ExportMode = 'total';
-
-    // ROBUST PARAMETER PARSING
-    const rawEntities = searchParams.getAll('entities');
-    const entitiesStrings = normalizeEntities(rawEntities);
-
-    // 1. Check if empty
-    if (entitiesStrings.length === 0) {
-        return NextResponse.json({ message: 'Parâmetro "entities" ausente ou inválido.' }, { status: 400 });
+    // REJEITAR 'entities' (plural)
+    if (searchParams.has('entities')) {
+        return NextResponse.json(
+            { message: 'Parâmetro "entities" não é suportado. Use "entity" (singular) para exportar um arquivo por vez.' },
+            { status: 400 }
+        );
     }
 
-    // 2. Validate against allowed values
-    const invalidEntities = entitiesStrings.filter(e => !validEntities.includes(e as ExportableEntity));
-    if (invalidEntities.length > 0) {
-        return NextResponse.json({ message: `Entidades inválidas fornecidas: ${invalidEntities.join(', ')}.` }, { status: 400 });
+    // VALIDAR 'entity' (singular)
+    const entityParam = searchParams.get('entity');
+
+    if (!entityParam) {
+        return NextResponse.json({ message: 'Parâmetro "entity" é obrigatório.' }, { status: 400 });
     }
 
-    const entities = entitiesStrings as ExportableEntity[];
+    // Validar se é uma das entidades permitidas
+    if (!validEntities.includes(entityParam as ExportableEntity)) {
+        return NextResponse.json(
+            { message: `Entidade inválida: "${entityParam}". Valores permitidos: ${validEntities.join(', ')}.` },
+            { status: 400 }
+        );
+    }
+
+    const entity = entityParam as ExportableEntity;
+
+    // Force 'total' mode
+    const mode: ExportMode = 'total';
 
     const token = process.env.SPOTTER_TOKEN_EXACT;
     const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
@@ -65,25 +56,21 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // A função agora retorna um objeto com o conteúdo do CSV e os logs
-    const { csvContent, logContent, fileName } = await exportDataForMode(mode, entities, token, baseUrl);
+    const { csvContent, fileName } = await exportDataForMode(mode, entity, token, baseUrl);
 
-    // Append a notice to logs about the mode override if applicable
-    const finalLogContent = requestedMode !== 'total'
-        ? `[SYSTEM] Modo solicitado '${requestedMode}' foi automaticamente convertido para 'total' para garantir exportação completa.\n${logContent}`
-        : logContent;
-
-    // Retorna a resposta como JSON para o frontend
-    return NextResponse.json({
-      csvContent,
-      logContent: finalLogContent,
-      fileName
+    // Retornar CSV direto
+    return new NextResponse(csvContent, {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': `attachment; filename="${fileName}"`
+        }
     });
 
   } catch (error) {
     console.error('Falha na exportação:', error);
     const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido no servidor.';
-    // Retornamos 500, mas o erro será JSON válido agora, ao contrário do timeout do Vercel
+    // Retornar JSON em caso de erro
     return NextResponse.json({ message: errorMessage }, { status: 500 });
   }
 }

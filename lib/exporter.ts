@@ -10,18 +10,13 @@ export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | '
 //region --- Função de Exportação Principal ---
 export async function exportDataForMode(
   mode: ExportMode, // Ignored logic-wise for now as user wants strict simple mapping by entity
-  entities: ExportableEntity[],
+  entity: ExportableEntity,
   token: string,
   baseUrl: string
 ): Promise<{ csvContent: string, logContent: string, fileName: string }> {
   const logMessages: string[] = [];
   const log: LogCallback = (message) => logMessages.push(`[${new Date().toISOString()}] ${message}`);
 
-  // We are simplifying logic based on user request:
-  // "O botão “Gerar e Baixar CSV” deve chamar o export da opção escolhida, e gerar 1 arquivo por vez."
-  // And usage of 'strict' functions we just created.
-
-  const entity = entities[0]; // Assuming single selection from UI
   log(`Iniciando exportação para entidade: ${entity}`);
 
   let csvContent = '';
@@ -38,6 +33,7 @@ export async function exportDataForMode(
           csvContent = await generateDealsItemsCsvStrict(token, baseUrl, log);
           fileName = 'negocios_itens.csv';
       } else {
+           // 'leads' might be passed here if extended, but UI only supports top 3.
            throw new Error(`Entidade desconhecida ou não suportada: ${entity}`);
       }
   } catch (err) {
