@@ -37,6 +37,13 @@ interface SpotterPerson {
     mainContact?: boolean | null;
 }
 
+// SAFE STRING LOWERCASE HELPER
+function toLowerText(input: unknown): string {
+    if (typeof input === "string") return input.toLowerCase();
+    if (input instanceof Error) return (input.message ?? "").toLowerCase();
+    try { return String(input ?? "").toLowerCase(); } catch { return ""; }
+}
+
 function formatDateBR(isoString?: string): string {
     if (!isoString) return '';
     try {
@@ -53,7 +60,8 @@ function formatDateBR(isoString?: string): string {
 
 function mapOrigemComercialReal(sourceValue?: string): string {
     if (!sourceValue) return 'Inbound';
-    const normalized = sourceValue.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    // Use safe toLowerText just in case, though strictly typing suggests it's string | undefined
+    const normalized = toLowerText(sourceValue).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
     if (normalized.includes('prospeccao ativa') || normalized.includes('outbound')) return 'Outbound';
     if (normalized.includes('carteira de clientes') || normalized.includes('base') || normalized.includes('white space')) return 'White Space (Base)';
@@ -65,7 +73,7 @@ function mapOrigemComercialReal(sourceValue?: string): string {
 
 function normalizeDiscountType(type?: string): string {
     if (!type) return 'Nenhum';
-    const lowerType = type.toLowerCase();
+    const lowerType = toLowerText(type);
     if (lowerType.includes('absoluto')) return 'Absoluto';
     if (lowerType.includes('percentual')) return 'Porcentual';
     return type;
