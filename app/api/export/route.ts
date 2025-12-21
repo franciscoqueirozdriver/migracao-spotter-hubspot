@@ -3,8 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exportDataForMode, ExportMode, ExportableEntity } from '@/lib/exporter';
 
 export const dynamic = 'force-dynamic';
+// Try to increase duration on supported plans (Pro/Enterprise).
+// Standard is 10s (Hobby) or 60s (Pro).
+// Setting higher just in case, but code-level timeout is the real safety net.
+export const maxDuration = 300;
 
-const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
+const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'leads'];
 
 function parseEntities(entitiesParam: string | null): ExportableEntity[] {
   if (!entitiesParam) {
@@ -26,7 +30,9 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const mode = (searchParams.get('mode') ?? 'sold') as ExportMode;
-    const entities = parseEntities(searchParams.get('entities'));
+    // Handle case where entities param might be missing or empty strings
+    const entitiesParam = searchParams.get('entities');
+    const entities = parseEntities(entitiesParam);
 
     if (entities.length === 0) {
       return NextResponse.json({ message: 'Nenhuma entidade selecionada para exportação.' }, { status: 400 });
@@ -55,6 +61,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Falha na exportação:', error);
     const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido no servidor.';
+    // Retornamos 500, mas o erro será JSON válido agora, ao contrário do timeout do Vercel
     return NextResponse.json({ message: errorMessage }, { status: 500 });
   }
 }

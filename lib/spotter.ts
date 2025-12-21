@@ -83,31 +83,63 @@ export async function exportProductsToCsv(token: string, baseUrl: string, log: L
   return csvContent;
 }
 
+/**
+ * Enhanced OData fetcher with robust timeout protection.
+ * @param initialUrl The OData endpoint URL
+ * @param token Authentication token
+ * @param log Logger callback
+ * @param maxDurationSeconds Hard timeout in seconds (default 50s for Vercel 60s limit).
+ *                           If exceeded, returns partial data instead of crashing.
+ */
 export async function fetchAllSpotterOData<T>(
   initialUrl: string,
   token: string,
-  log: LogCallback
+  log: LogCallback,
+  maxDurationSeconds: number = 50
 ): Promise<T[]> {
   let allItems: T[] = [];
   let nextUrl: string | undefined = initialUrl;
+
+  // Optimize: Ensure we request a larger page size if not already specified
+  if (!nextUrl.includes('$top') && !nextUrl.includes('$count')) {
+      // Check if URL already has params
+      const separator = nextUrl.includes('?') ? '&' : '?';
+      nextUrl = `${nextUrl}${separator}$top=120`; // 120 is a safe batch size for many OData APIs
+      log(`Otimização: Adicionando param $top=120 para reduzir requisições.`);
+  }
+
   let page = 1;
   const maxRetries = 5;
   const visitedUrls = new Set<string>();
+  const startTime = Date.now();
+  const timeoutMs = maxDurationSeconds * 1000;
 
-  log(`Iniciando busca OData em ${initialUrl}`);
+  log(`Iniciando busca OData em ${initialUrl} (Timeout: ${maxDurationSeconds}s)`);
 
   while (nextUrl) {
-    // Loop protection
+    // 1. TIMEOUT CHECK
+    const elapsedTime = Date.now() - startTime;
+    if (elapsedTime > timeoutMs) {
+        log(`⚠️ ALERTA CRÍTICO: Limite de tempo de execução (${maxDurationSeconds}s) atingido.`);
+        log(`⚠️ Retornando ${allItems.length} itens coletados até agora para evitar erro 504.`);
+        log(`⚠️ A exportação está incompleta. Considere reduzir o escopo ou aumentar o limite do servidor.`);
+        break;
+    }
+
+    // 2. Loop protection
     if (visitedUrls.has(nextUrl)) {
         log(`ALERTA: Loop de paginação detectado. URL já visitada: ${nextUrl}. Interrompendo busca.`);
         break;
     }
     visitedUrls.add(nextUrl);
 
-    log(`Buscando página ${page}...`);
+    log(`Buscando página ${page} (Decorridos: ${(elapsedTime/1000).toFixed(1)}s)...`);
 
     let response: Response | null = null;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Check timeout inside retry loop too
+      if (Date.now() - startTime > timeoutMs) break;
+
       try {
         response = await fetch(nextUrl, {
           headers: { 'token_exact': token },
@@ -127,10 +159,19 @@ export async function fetchAllSpotterOData<T>(
       }
     }
 
+    // Double check if we broke out due to timeout
+    if (Date.now() - startTime > timeoutMs) {
+         log(`⚠️ Timeout durante tentativas de conexão.`);
+         break;
+    }
+
     if (!response || !response.ok) {
       const statusText = response ? `${response.status} ${response.statusText}` : 'sem resposta';
       const errorText = `A API do Spotter retornou um erro: ${statusText}.`;
       log(`ERRO: ${errorText}`);
+      // Don't throw entire process away if we have some data?
+      // Ideally yes, but usually API error means stop.
+      // Let's throw to be safe, but catching 504 is priority.
       throw new Error(errorText);
     }
 
@@ -144,14 +185,11 @@ export async function fetchAllSpotterOData<T>(
       log(`Página ${page} retornou 0 itens.`);
     }
 
-    // User Requirement: "Não depender de “página vazia” como critério único de finalização."
-    // We continue as long as nextUrl is present.
-
     nextUrl = data['@odata.nextLink'];
     page++;
 
-    // Safety break to prevent infinite loops if API is misbehaving severely
-    if (page > 20000) { // arbitrary high limit
+    // Safety break
+    if (page > 20000) {
         log('ALERTA: Limite máximo de páginas (20000) atingido. Interrompendo busca por segurança.');
         break;
     }
