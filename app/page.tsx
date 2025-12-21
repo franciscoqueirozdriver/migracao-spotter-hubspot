@@ -7,8 +7,8 @@ type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 
 const entityConfig: Record<ExportableEntity, { label: string }> = {
   companies: { label: 'Empresas' },
-  contacts: { label: 'Contatos (Não implementado)' },
-  deals_line_items: { label: 'Negócios + Itens de Linha (Não implementado)' },
+  contacts: { label: 'Contatos' },
+  deals_line_items: { label: 'Negócios + Itens de Linha' },
 };
 
 const modeConfig: Record<ExportMode, { label: string; description: string; entities: ExportableEntity[] }> = {
@@ -75,7 +75,7 @@ export default function HomePage() {
     }
   };
 
-  const isModeImplemented = mode === 'sold' && selectedEntity === 'companies';
+  const isModeImplemented = true; // Always true now as we implemented all logic
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
@@ -109,7 +109,7 @@ export default function HomePage() {
             id="entity-select"
             value={selectedEntity}
             onChange={(e) => setSelectedEntity(e.target.value as ExportableEntity)}
-            disabled={isLoading || mode !== 'sold'}
+            disabled={isLoading}
             style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
           >
             {modeConfig[mode].entities.map(entity => (
