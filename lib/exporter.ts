@@ -1,6 +1,7 @@
 // lib/exporter.ts
 import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
+import { exportTotalData } from './total_exporter';
 
 //region --- Tipos e Constantes ---
 const EXPECTED_HEADERS = {
@@ -12,8 +13,11 @@ const HEADERS = {
 };
 
 export type LogCallback = (message: string) => void;
-export type ExportMode = 'sold' | 'inProgress' | 'lost';
-export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
+// Added 'total' mode
+export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
+// Added 'leads' to exportable entities just in case, though route.ts needs update to accept it
+export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads';
+
 interface SpotterLeadSold { leadId: number; }
 interface SpotterLead { id: number; organizationId?: number | null; stage?: { name?: string }; website?: string | null; }
 interface SpotterOrganization { id: number; name?: string; website?: string | null; cpfCnpj?: string; street?: string; number?: string; complement?: string; neighborhood?: string; zipCode?: string; city?: string; state?: string; country?: string; }
@@ -41,7 +45,7 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
   // 1. Fonte da Verdade: LeadsSold
   log('Passo 1: Buscando todos os negócios fechados (LeadsSold)...');
   const sales = await fetchLeadsSold(token, baseUrl, log);
-  const soldLeadIds = Array.from(new Set(sales.map(s => s.leadId))); // Correção de Build
+  const soldLeadIds = Array.from(new Set(sales.map(s => s.leadId)));
   log(`Total de LeadsSold encontrados: ${sales.length} (resultando em ${soldLeadIds.length} leads únicos)`);
 
   // 2. Mapeamento para Leads
@@ -137,8 +141,26 @@ export async function exportDataForMode(
 
   let csvContent = '';
   let fileName = 'export.csv';
+  let logContent = '';
 
-  if (mode === 'sold') {
+  if (mode === 'total') {
+      // Map existing entities to "Total" requested entities
+      // companies -> companies
+      // contacts -> contacts
+      // deals_line_items -> leads (since deals_line_items implies leads/sales, we map it to leads_all)
+      let requestedEntity: 'companies' | 'contacts' | 'leads' | undefined;
+
+      if (entities.includes('companies')) requestedEntity = 'companies';
+      else if (entities.includes('contacts')) requestedEntity = 'contacts';
+      else if (entities.includes('deals_line_items') || entities.includes('leads')) requestedEntity = 'leads';
+
+      const result = await exportTotalData(token, baseUrl, log, requestedEntity);
+      csvContent = result.csvContent;
+      fileName = result.fileName;
+      // Combine logs
+      logMessages.push(`\n--- Logs do Baseline ---\n${result.logContent}`);
+  }
+  else if (mode === 'sold') {
     if (entities.includes('companies')) {
         log('Gerando arquivo de empresas...');
         csvContent = await generateCompaniesCsv(token, baseUrl, log);
@@ -154,7 +176,7 @@ export async function exportDataForMode(
     throw new Error(errorMessage);
   }
 
-  const logContent = logMessages.join('\n');
+  logContent = logMessages.join('\n');
   log('Exportação concluída.');
 
   return { csvContent, logContent, fileName };

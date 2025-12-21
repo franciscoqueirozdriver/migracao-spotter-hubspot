@@ -1,5 +1,7 @@
+import { LogCallback } from './exporter';
+
 // Type definitions for Spotter API response
-interface SpotterProduct {
+export interface SpotterProduct {
   id: number;
   value: number | null | undefined;
   description: string;
@@ -18,8 +20,10 @@ interface HubSpotProduct {
   'ID do Produto no Spotter': number;
 }
 
-// Type definition for the logging callback
-type LogCallback = (message: string) => void;
+export type ODataResponse<T> = {
+  value?: T[];
+  ['@odata.nextLink']?: string;
+};
 
 // Fetch all products from Spotter API, handling pagination and logging
 async function fetchAllProducts(token: string, baseUrl: string, log: LogCallback): Promise<SpotterProduct[]> {
@@ -79,13 +83,6 @@ export async function exportProductsToCsv(token: string, baseUrl: string, log: L
   return csvContent;
 }
 
-// lib/spotter.ts
-
-export type ODataResponse<T> = {
-  value?: T[];
-  ['@odata.nextLink']?: string;
-};
-
 export async function fetchAllSpotterOData<T>(
   initialUrl: string,
   token: string,
@@ -95,25 +92,37 @@ export async function fetchAllSpotterOData<T>(
   let nextUrl: string | undefined = initialUrl;
   let page = 1;
   const maxRetries = 5;
+  const visitedUrls = new Set<string>();
 
   log(`Iniciando busca OData em ${initialUrl}`);
 
   while (nextUrl) {
+    // Loop protection
+    if (visitedUrls.has(nextUrl)) {
+        log(`ALERTA: Loop de paginação detectado. URL já visitada: ${nextUrl}. Interrompendo busca.`);
+        break;
+    }
+    visitedUrls.add(nextUrl);
+
     log(`Buscando página ${page}...`);
 
     let response: Response | null = null;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      response = await fetch(nextUrl, {
-        headers: { 'token_exact': token },
-      });
+      try {
+        response = await fetch(nextUrl, {
+          headers: { 'token_exact': token },
+        });
 
-      if (response.status !== 503) {
-        break; // Success or non-retryable error
+        if (response.status !== 503) {
+          break; // Success or non-retryable error
+        }
+      } catch (error) {
+        if (attempt === maxRetries) throw error;
       }
 
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s, 8s
-        log(`Tentativa ${attempt} falhou com status 503. Tentando novamente em ${delay / 1000}s...`);
+        log(`Tentativa ${attempt} falhou com status 503 (ou erro de rede). Tentando novamente em ${delay / 1000}s...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -128,23 +137,29 @@ export async function fetchAllSpotterOData<T>(
     const data: ODataResponse<T> = await response.json();
     const items = data.value ?? [];
 
-    if (items.length === 0) {
-      log('Recebida uma página vazia. Finalizando a busca.');
-      break;
+    if (items.length > 0) {
+      allItems = allItems.concat(items);
+      log(`Recebidos ${items.length} itens.`);
+    } else {
+      log(`Página ${page} retornou 0 itens.`);
     }
 
-    allItems = allItems.concat(items);
-    log(`Recebidos ${items.length} itens.`);
+    // User Requirement: "Não depender de “página vazia” como critério único de finalização."
+    // We continue as long as nextUrl is present.
+
     nextUrl = data['@odata.nextLink'];
     page++;
+
+    // Safety break to prevent infinite loops if API is misbehaving severely
+    if (page > 20000) { // arbitrary high limit
+        log('ALERTA: Limite máximo de páginas (20000) atingido. Interrompendo busca por segurança.');
+        break;
+    }
   }
 
   log(`Busca OData concluída. Total de ${allItems.length} itens recebidos.`);
   return allItems;
 }
-
-// The helper functions need to be included as well, but they don't change.
-// I'll paste them back in.
 
 function removeDuplicateProducts(products: SpotterProduct[]): SpotterProduct[] {
     const seen = new Set<number>();
