@@ -100,13 +100,8 @@ export async function fetchAllSpotterOData<T>(
   let allItems: T[] = [];
   let nextUrl: string | undefined = initialUrl;
 
-  // Optimize: Ensure we request a larger page size if not already specified
-  if (!nextUrl.includes('$top') && !nextUrl.includes('$count')) {
-      // Check if URL already has params
-      const separator = nextUrl.includes('?') ? '&' : '?';
-      nextUrl = `${nextUrl}${separator}$top=120`; // 120 is a safe batch size for many OData APIs
-      log(`Otimização: Adicionando param $top=120 para reduzir requisições.`);
-  }
+  // NOTE: Implicit optimization ($top=120) removed as per user request.
+  // We rely on the provided URL or API defaults.
 
   let page = 1;
   const maxRetries = 5;
@@ -122,7 +117,6 @@ export async function fetchAllSpotterOData<T>(
     if (elapsedTime > timeoutMs) {
         log(`⚠️ ALERTA CRÍTICO: Limite de tempo de execução (${maxDurationSeconds}s) atingido.`);
         log(`⚠️ Retornando ${allItems.length} itens coletados até agora para evitar erro 504.`);
-        log(`⚠️ A exportação está incompleta. Considere reduzir o escopo ou aumentar o limite do servidor.`);
         break;
     }
 
@@ -169,9 +163,6 @@ export async function fetchAllSpotterOData<T>(
       const statusText = response ? `${response.status} ${response.statusText}` : 'sem resposta';
       const errorText = `A API do Spotter retornou um erro: ${statusText}.`;
       log(`ERRO: ${errorText}`);
-      // Don't throw entire process away if we have some data?
-      // Ideally yes, but usually API error means stop.
-      // Let's throw to be safe, but catching 504 is priority.
       throw new Error(errorText);
     }
 

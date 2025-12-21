@@ -127,6 +127,34 @@ async function generateCompaniesCsv(token: string, baseUrl: string, log: LogCall
 }
 //endregion
 
+//region --- Geração de CSV de Empresas (TOTAL) ---
+async function generateTotalCompaniesCsv(token: string, baseUrl: string, log: LogCallback): Promise<string> {
+    log('Modo Total: Buscando TODAS as organizações (sem filtro)...');
+
+    // Explicitly fetching directly from /v3/organization
+    const allOrgs = await fetchAllSpotterOData<SpotterOrganization>(`${baseUrl}/v3/organization`, token, log);
+
+    log(`Total de organizações recuperadas: ${allOrgs.length}`);
+
+    const rows = allOrgs.map(org => ({
+        'Nome da empresa': org.name,
+        'Nome de domínio da empresa': normalizeDomain(org.website),
+        'CNPJ': org.cpfCnpj,
+        'Endereço': org.street,
+        'Número': org.number,
+        'Complemento': org.complement,
+        'Bairro': org.neighborhood,
+        'Código postal': org.zipCode,
+        'Cidade': org.city,
+        'Estado/Região': org.state,
+        'País/Região': org.country,
+        'spotter_organization_id': org.id
+    }));
+
+    return buildCsv(HEADERS.COMPANIES, rows.map(row => HEADERS.COMPANIES.map(h => sanitizeCsvValue(row[h as keyof typeof row]))));
+}
+//endregion
+
 //region --- Função de Exportação Principal ---
 export async function exportDataForMode(
   mode: ExportMode,
@@ -146,17 +174,14 @@ export async function exportDataForMode(
       // Logic for Total Export (Complete files, no filters)
       if (entities.includes('companies')) {
           log('Modo Total: Exportando TODAS as Empresas...');
-          const result = await exportCompaniesToCsv(token, log);
-          csvContent = result.csvContent;
+          csvContent = await generateTotalCompaniesCsv(token, baseUrl, log);
           fileName = `empresas_total_${new Date().toISOString().split('T')[0]}.csv`;
-          logMessages.push(JSON.stringify(result.logData, null, 2));
 
       } else if (entities.includes('contacts')) {
           log('Modo Total: Exportando TODOS os Contatos...');
+          // Reuse contacts export but we know the fetcher there is already fetching "all" effectively if configured globally
           const result = await exportContactsToCsv(token, log);
 
-          // Helper to convert rejected rows to CSV if needed? No, user wants valid ones mostly.
-          // We construct CSV from validRows
           if (result.validRows.length > 0) {
               const headers = Object.keys(result.validRows[0]);
               const rows = result.validRows.map(row => headers.map(h => sanitizeCsvValue((row as any)[h])));
@@ -170,6 +195,7 @@ export async function exportDataForMode(
 
       } else if (entities.includes('deals_line_items') || entities.includes('leads')) {
           log('Modo Total: Exportando TODOS os Negócios (Leads)...');
+          // Reuse the 'All Leads' function we created in deals.ts
           const result = await exportAllDealsToCsv(token, baseUrl, log);
           csvContent = result.csvContent;
           fileName = `negocios_total_${new Date().toISOString().split('T')[0]}.csv`;
