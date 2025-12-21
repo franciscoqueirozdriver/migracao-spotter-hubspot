@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "export:baseline": "tsx scripts/exporters/run-baseline.ts"
+    "export:baseline": "tsx scripts/exporters/run-baseline.ts",
+    "export:custom": "tsx scripts/exporters/run-export.ts"
   },
   "dependencies": {
     "next": "14.2.3",

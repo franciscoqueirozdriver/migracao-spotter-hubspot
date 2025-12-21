@@ -1,5 +1,5 @@
 
-export type LogCallback = (message: string) => void;
+import { LogCallback } from '../exporter';
 
 export type ODataResponse<T> = {
   value?: T[];
@@ -28,6 +28,10 @@ export async function paginateOData<T>(
   let page = 1;
   const maxRetries = 5;
   const visitedUrls = new Set<string>();
+
+  // New logic variables
+  let consecutiveEmptyPages = 0;
+  const MAX_CONSECUTIVE_EMPTY_PAGES = 3;
 
   log(`Starting OData fetch at ${nextUrl}`);
 
@@ -73,9 +77,21 @@ export async function paginateOData<T>(
     const data: ODataResponse<T> = await response.json();
     const items = data.value ?? []; // Normalize to array
 
-    if (items.length > 0) {
-      allItems = allItems.concat(items);
+    // --- New Logic Start ---
+    if (items.length === 0) {
+        consecutiveEmptyPages++;
+        if (consecutiveEmptyPages >= MAX_CONSECUTIVE_EMPTY_PAGES) {
+            log(`STOPPING: Reached ${MAX_CONSECUTIVE_EMPTY_PAGES} consecutive empty pages.`);
+            break;
+        }
+        if (data['@odata.nextLink']) {
+             log(`WARNING: Page ${page} is empty but has nextLink. Consecutive empty: ${consecutiveEmptyPages}`);
+        }
+    } else {
+        consecutiveEmptyPages = 0; // Reset counter
+        allItems = allItems.concat(items);
     }
+    // --- New Logic End ---
 
     // Log progress every page or so
     if (page % 10 === 0 || items.length === 0) {
@@ -83,6 +99,13 @@ export async function paginateOData<T>(
     }
 
     nextUrl = data['@odata.nextLink'];
+
+    // Logic 1: Stop if no nextLink
+    if (!nextUrl) {
+        log('Pagination finished: No @odata.nextLink provided.');
+        break;
+    }
+
     page++;
   }
 

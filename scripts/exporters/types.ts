@@ -8,7 +8,15 @@ export interface SpotterOrganization {
   subIndustry?: string | null;
   employees?: number | null;
   revenue?: number | null;
-  // Add other relevant fields if needed
+  cpfCnpj?: string | null;
+  street?: string | null;
+  number?: string | null;
+  complement?: string | null;
+  neighborhood?: string | null;
+  zipCode?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
 }
 
 export interface SpotterLead {
@@ -20,7 +28,7 @@ export interface SpotterLead {
   userId?: number | null;
   pipeline?: string | null;
   creationDate?: string | null;
-  // Add other relevant fields
+  lead?: string | null; // Name of the lead
 }
 
 export interface SpotterPerson {
@@ -30,7 +38,7 @@ export interface SpotterPerson {
   linkedIn?: string | null;
   phone?: string | null;
   role?: string | null;
-  leadId?: number | null; // Often associated with a lead
+  leadId?: number | null;
   mainContact?: boolean | null;
 }
 
