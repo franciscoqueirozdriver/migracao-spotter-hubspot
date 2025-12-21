@@ -24,24 +24,8 @@ function normalizeEntities(input: unknown): string[] {
       if (typeof v !== "string") return [];
       return v.split(","); // permite entities=a,b,c
     })
-    .map((s) => s.trim().toLowerCase()) // Safe normalization
+    .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-}
-
-function parseEntities(entitiesRaw: unknown): ExportableEntity[] {
-  const entities = normalizeEntities(entitiesRaw);
-
-  if (entities.length === 0) {
-    throw new Error('O parâmetro "entities" é obrigatório.');
-  }
-
-  const invalidEntities = entities.filter(e => !validEntities.includes(e as ExportableEntity));
-
-  if (invalidEntities.length > 0) {
-    throw new Error(`Entidades inválidas fornecidas: ${invalidEntities.join(', ')}.`);
-  }
-
-  return entities as ExportableEntity[];
 }
 
 export async function GET(request: NextRequest) {
@@ -54,16 +38,22 @@ export async function GET(request: NextRequest) {
     // We treat 'sold' from UI as an intent to export data, but we fulfill it with the robust 'total' strategy.
     let mode: ExportMode = 'total';
 
-    // Handle case where entities param might be missing or empty strings
-    // We get all values to support entities=a&entities=b style or comma separated
-    const entitiesRaw = searchParams.getAll('entities');
-    // If getting all params returns an array of strings, we pass that.
-    // However, if it's empty, we might try single get for safety or just pass empty array.
-    const entities = parseEntities(entitiesRaw.length > 0 ? entitiesRaw : searchParams.get('entities'));
+    // ROBUST PARAMETER PARSING
+    const rawEntities = searchParams.getAll('entities');
+    const entitiesStrings = normalizeEntities(rawEntities);
 
-    if (entities.length === 0) {
-      return NextResponse.json({ message: 'Nenhuma entidade selecionada para exportação.' }, { status: 400 });
+    // 1. Check if empty
+    if (entitiesStrings.length === 0) {
+        return NextResponse.json({ message: 'Parâmetro "entities" ausente ou inválido.' }, { status: 400 });
     }
+
+    // 2. Validate against allowed values
+    const invalidEntities = entitiesStrings.filter(e => !validEntities.includes(e as ExportableEntity));
+    if (invalidEntities.length > 0) {
+        return NextResponse.json({ message: `Entidades inválidas fornecidas: ${invalidEntities.join(', ')}.` }, { status: 400 });
+    }
+
+    const entities = entitiesStrings as ExportableEntity[];
 
     const token = process.env.SPOTTER_TOKEN_EXACT;
     const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
