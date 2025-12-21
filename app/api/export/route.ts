@@ -10,13 +10,31 @@ export const maxDuration = 300;
 
 const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'leads'];
 
-function parseEntities(entitiesParam: string | null): ExportableEntity[] {
-  if (!entitiesParam) {
-    // Se nenhum parâmetro for fornecido, podemos assumir um padrão ou lançar um erro.
-    // Para este caso, vamos assumir que o usuário deve sempre fornecer as entidades.
+function normalizeEntities(input: unknown): string[] {
+  // Aceita: string, string[], ou qualquer coisa (valida)
+  const arr: unknown[] =
+    Array.isArray(input) ? input :
+    typeof input === "string" ? [input] :
+    input == null ? [] :
+    [input];
+
+  // Achata "a,b,c" e remove lixo
+  return arr
+    .flatMap((v) => {
+      if (typeof v !== "string") return [];
+      return v.split(","); // permite entities=a,b,c
+    })
+    .map((s) => s.trim().toLowerCase()) // Safe normalization
+    .filter(Boolean);
+}
+
+function parseEntities(entitiesRaw: unknown): ExportableEntity[] {
+  const entities = normalizeEntities(entitiesRaw);
+
+  if (entities.length === 0) {
     throw new Error('O parâmetro "entities" é obrigatório.');
   }
-  const entities = entitiesParam.split(',');
+
   const invalidEntities = entities.filter(e => !validEntities.includes(e as ExportableEntity));
 
   if (invalidEntities.length > 0) {
@@ -37,8 +55,11 @@ export async function GET(request: NextRequest) {
     let mode: ExportMode = 'total';
 
     // Handle case where entities param might be missing or empty strings
-    const entitiesParam = searchParams.get('entities');
-    const entities = parseEntities(entitiesParam);
+    // We get all values to support entities=a&entities=b style or comma separated
+    const entitiesRaw = searchParams.getAll('entities');
+    // If getting all params returns an array of strings, we pass that.
+    // However, if it's empty, we might try single get for safety or just pass empty array.
+    const entities = parseEntities(entitiesRaw.length > 0 ? entitiesRaw : searchParams.get('entities'));
 
     if (entities.length === 0) {
       return NextResponse.json({ message: 'Nenhuma entidade selecionada para exportação.' }, { status: 400 });
