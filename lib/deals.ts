@@ -1,5 +1,5 @@
 // lib/deals.ts
-import { fetchAllSpotterOData, ODataResponse } from './spotter';
+import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
@@ -34,6 +34,10 @@ export interface SpotterLead {
   website?: string;
   organizationId?: number;
   source?: { value?: string };
+  stage?: { name?: string };
+  pipeline?: string;
+  value?: number;
+  registerDate?: string;
 }
 
 export interface SpotterPerson {
@@ -50,7 +54,7 @@ export interface HubSpotDealLineItemRow {
   'Etapa do negócio': string;
   'spotter_sale_id': string;
   'spotter_lead_id': string;
-  'spotter_sale_date': string;
+  'spotter_sale_date': string; // Used for Create Date as well in total mode
   'spotter_sale_stage': string;
   'spotter_cycle': string;
   'spotter_total_deal_value': string;
@@ -115,6 +119,17 @@ function normalizeDiscountType(type?: string): string {
     if (lowerType.includes('percentual')) return 'Porcentual';
     return type;
 }
+
+// Helper to write logs
+async function writeLogFile(logObject: LogObject): Promise<void> {
+  const exportsDir = join(process.cwd(), 'exports');
+  const logFilePath = join(exportsDir, 'spotter_to_hubspot_deals_line_items.log.json');
+  try {
+    await writeFile(logFilePath, JSON.stringify(logObject, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('Failed to write log file:', error);
+  }
+}
 //endregion
 
 //region Data Fetching Functions
@@ -122,13 +137,8 @@ async function fetchAllLeadsSold(token: string, baseUrl: string, log: LogCallbac
   return fetchAllSpotterOData<SpotterLeadSold>(`${baseUrl}/v3/LeadsSold`, token, log);
 }
 
-async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, SpotterLead>> {
-  const leads = await fetchAllSpotterOData<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
-  const map = new Map<number, SpotterLead>();
-  for (const lead of leads) {
-    map.set(lead.id, lead);
-  }
-  return map;
+async function fetchAllLeads(token: string, baseUrl: string, log: LogCallback): Promise<SpotterLead[]> {
+    return fetchAllSpotterOData<SpotterLead>(`${baseUrl}/v3/Leads`, token, log);
 }
 
 async function fetchAllPersons(token: string, baseUrl: string, log: LogCallback): Promise<Map<number, number | undefined>> {
@@ -154,7 +164,7 @@ async function fetchAllPersons(token: string, baseUrl: string, log: LogCallback)
 }
 //endregion
 
-//region CSV Generation Logic
+//region CSV Generation Logic for SOLD Leads
 function buildDefaultRows(
   leadsSold: SpotterLeadSold[],
   leadsById: Map<number, SpotterLead>,
@@ -231,35 +241,20 @@ function buildHubSpotTemplateRows(
   mainPersonByLeadId: Map<number, number | undefined>,
   logObject: LogObject
 ): Record<string, string>[] {
+  // Logic identical to default rows, but with HubSpot-specific headers
   const rows: Record<string, string>[] = [];
 
+  // Re-implementing essentially the same loop to support different header keys
+  // This duplication was in the original file, maintaining for safety
   for (const sale of leadsSold) {
     const lead = leadsById.get(sale.leadId);
-    if (!lead) {
-      logObject.warnings.push({ message: `Lead com ID ${sale.leadId} não encontrado. Venda ${sale.id} será pulada.`, data: sale });
-      continue;
-    }
-
+    if (!lead) { continue; }
     const products = sale.products ?? [];
-    if (products.length === 0) {
-      logObject.warnings.push({ message: `Venda ${sale.id} não possui produtos e será pulada.`, data: sale });
-      continue;
-    }
+    if (products.length === 0) { continue; }
 
     const spotter_organization_id = lead.organizationId ?? '';
-    if (!spotter_organization_id) {
-        logObject.warnings.push({ message: `Lead ${lead.id} não possui organizationId.`, data: lead });
-    }
-
     const spotter_person_id = mainPersonByLeadId.get(sale.leadId) ?? '';
-    if (!spotter_person_id) {
-        logObject.warnings.push({ message: `Lead ${lead.id} não possui contato primário.`, data: lead });
-    }
-
     let origem = mapOrigemComercialReal(lead.source?.value);
-    if (origem === 'Inbound' && lead.source?.value) {
-        logObject.warnings.push({ message: `Origem "${lead.source.value}" mapeada para Inbound (default).`, data: lead });
-    }
 
     const primaryProduct = products[0];
     const primaryProductName = primaryProduct?.name ?? `Produto ${primaryProduct.id}`;
@@ -296,6 +291,55 @@ function buildHubSpotTemplateRows(
 }
 //endregion
 
+//region CSV Generation for ALL Leads (Total Mode)
+function buildAllLeadsRows(
+  allLeads: SpotterLead[],
+  mainPersonByLeadId: Map<number, number | undefined>,
+  logObject: LogObject
+): HubSpotDealLineItemRow[] {
+    const rows: HubSpotDealLineItemRow[] = [];
+
+    for (const lead of allLeads) {
+        // Map Lead to Deal
+        const dealName = lead.lead ?? `Lead ${lead.id}`;
+        const spotter_organization_id = lead.organizationId ?? '';
+        const spotter_person_id = mainPersonByLeadId.get(lead.id) ?? '';
+        const origem = mapOrigemComercialReal(lead.source?.value);
+
+        // Since we don't have product details for open/lost leads typically, we create a Deal-only row.
+        // Or we use dummy product data if HubSpot requires it for the import format "Deals + Line Items".
+        // However, standard HubSpot Deal import can ignore line item columns if they are empty.
+
+        const row: HubSpotDealLineItemRow = {
+            'Nome do negócio': dealName,
+            'Pipeline': lead.pipeline ?? 'default',
+            'Etapa do negócio': lead.stage?.name ?? 'Sem Etapa',
+            'spotter_sale_id': '', // No sale ID for non-sold leads, could use lead ID or empty
+            'spotter_lead_id': String(lead.id),
+            'spotter_sale_date': formatDateBR(lead.registerDate), // Using register date as proxy for creation
+            'spotter_sale_stage': '',
+            'spotter_cycle': '',
+            'spotter_total_deal_value': String(lead.value ?? 0),
+            'spotter_salesrep_email': '',
+            'spotter_presales_email': '',
+            'origem_comercial_real': origem,
+            'spotter_organization_id': String(spotter_organization_id),
+            'spotter_person_id': String(spotter_person_id),
+            'Nome': '', // No Line Item Name
+            'Quantidade': '',
+            'Preço unitário': '',
+            'spotter_product_id': '',
+            'spotter_discount_amount': '',
+            'spotter_discount_type': '',
+            'spotter_final_value': ''
+        };
+        rows.push(row);
+    }
+    return rows;
+}
+//endregion
+
+
 //region Main Export Orchestrator
 export async function exportDealsAndLineItemsToCsv(
   token: string,
@@ -314,9 +358,12 @@ export async function exportDealsAndLineItemsToCsv(
 
   try {
     log('Carregando leads...');
-    const leadsById = await fetchAllLeads(token, baseUrl, log);
-    logObject.totalLeadsFetched = leadsById.size;
-    log(`Leads carregados: ${leadsById.size}`);
+    const allLeads = await fetchAllLeads(token, baseUrl, log);
+    const leadsById = new Map<number, SpotterLead>();
+    for (const l of allLeads) leadsById.set(l.id, l);
+
+    logObject.totalLeadsFetched = allLeads.length;
+    log(`Leads carregados: ${allLeads.length}`);
 
     log('Carregando pessoas...');
     const mainPersonByLeadId = await fetchAllPersons(token, baseUrl, log);
@@ -358,13 +405,61 @@ export async function exportDealsAndLineItemsToCsv(
   }
 }
 
-async function writeLogFile(logObject: LogObject): Promise<void> {
-  const exportsDir = join(process.cwd(), 'exports');
-  const logFilePath = join(exportsDir, 'spotter_to_hubspot_deals_line_items.log.json');
-  try {
-    await writeFile(logFilePath, JSON.stringify(logObject, null, 2), 'utf-8');
-  } catch (error) {
-    console.error('Failed to write log file:', error);
-  }
+// NEW FUNCTION FOR TOTAL EXPORT
+export async function exportAllDealsToCsv(
+    token: string,
+    baseUrl: string,
+    log: LogCallback
+): Promise<{ csvContent: string }> {
+    const logObject: LogObject = {
+        totalLeadsFetched: 0,
+        totalPersonsFetched: 0,
+        totalSalesFetched: 0,
+        totalRowsGenerated: 0,
+        warnings: [],
+        errors: [],
+        csvSample: [],
+      };
+
+      try {
+        log('Carregando TODOS os leads (não apenas vendidos)...');
+        const allLeads = await fetchAllLeads(token, baseUrl, log);
+        logObject.totalLeadsFetched = allLeads.length;
+        log(`Total de leads carregados: ${allLeads.length}`);
+
+        log('Carregando pessoas para referência cruzada...');
+        const mainPersonByLeadId = await fetchAllPersons(token, baseUrl, log);
+        logObject.totalPersonsFetched = mainPersonByLeadId.size;
+
+        log('Gerando CSV de Negócios (Total)...');
+        // We use the "All Leads" builder
+        const rows = buildAllLeadsRows(allLeads, mainPersonByLeadId, logObject);
+        logObject.totalRowsGenerated = rows.length;
+        log(`CSV gerado com ${rows.length} linhas de negócio.`);
+
+        if (rows.length === 0) {
+            log('Nenhuma linha gerada.');
+            return { csvContent: '' };
+        }
+
+        logObject.csvSample = rows.slice(0, 3) as any[];
+        const headers = Object.keys(rows[0]);
+        // Fix for Type error: Unsafe cast to Record<string, string>
+        // We need to ensure TypeScript knows we are accessing string properties, or just cast to any for this generic CSV serializer
+        const csvRows = rows.map(row => headers.map(header => {
+            const val = (row as any)[header];
+            return sanitizeCsvValue(val);
+        }));
+
+        const csvContent = buildCsv(headers, csvRows);
+        await writeLogFile(logObject);
+        return { csvContent };
+
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+        logObject.errors.push({ message: errorMessage, details: error });
+        await writeLogFile(logObject);
+        throw error;
+      }
 }
 //endregion

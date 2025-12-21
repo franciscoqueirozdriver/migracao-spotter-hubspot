@@ -1,7 +1,9 @@
 // lib/exporter.ts
 import { fetchAllSpotterOData } from './spotter';
 import { buildCsv, sanitizeCsvValue } from './csv';
-import { exportTotalData } from './total_exporter';
+import { exportCompaniesToCsv } from './companies';
+import { exportContactsToCsv } from './contacts';
+import { exportAllDealsToCsv } from './deals';
 
 //region --- Tipos e Constantes ---
 const EXPECTED_HEADERS = {
@@ -13,9 +15,7 @@ const HEADERS = {
 };
 
 export type LogCallback = (message: string) => void;
-// Added 'total' mode
 export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
-// Added 'leads' to exportable entities just in case, though route.ts needs update to accept it
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads';
 
 interface SpotterLeadSold { leadId: number; }
@@ -141,24 +141,41 @@ export async function exportDataForMode(
 
   let csvContent = '';
   let fileName = 'export.csv';
-  let logContent = '';
 
   if (mode === 'total') {
-      // Map existing entities to "Total" requested entities
-      // companies -> companies
-      // contacts -> contacts
-      // deals_line_items -> leads (since deals_line_items implies leads/sales, we map it to leads_all)
-      let requestedEntity: 'companies' | 'contacts' | 'leads' | undefined;
+      // Logic for Total Export (Complete files, no filters)
+      if (entities.includes('companies')) {
+          log('Modo Total: Exportando TODAS as Empresas...');
+          const result = await exportCompaniesToCsv(token, log);
+          csvContent = result.csvContent;
+          fileName = `empresas_total_${new Date().toISOString().split('T')[0]}.csv`;
+          logMessages.push(JSON.stringify(result.logData, null, 2));
 
-      if (entities.includes('companies')) requestedEntity = 'companies';
-      else if (entities.includes('contacts')) requestedEntity = 'contacts';
-      else if (entities.includes('deals_line_items') || entities.includes('leads')) requestedEntity = 'leads';
+      } else if (entities.includes('contacts')) {
+          log('Modo Total: Exportando TODOS os Contatos...');
+          const result = await exportContactsToCsv(token, log);
 
-      const result = await exportTotalData(token, baseUrl, log, requestedEntity);
-      csvContent = result.csvContent;
-      fileName = result.fileName;
-      // Combine logs
-      logMessages.push(`\n--- Logs do Baseline ---\n${result.logContent}`);
+          // Helper to convert rejected rows to CSV if needed? No, user wants valid ones mostly.
+          // We construct CSV from validRows
+          if (result.validRows.length > 0) {
+              const headers = Object.keys(result.validRows[0]);
+              const rows = result.validRows.map(row => headers.map(h => sanitizeCsvValue((row as any)[h])));
+              csvContent = buildCsv(headers, rows);
+          } else {
+              csvContent = '';
+          }
+
+          fileName = `contatos_total_${new Date().toISOString().split('T')[0]}.csv`;
+          logMessages.push(JSON.stringify(result.logData, null, 2));
+
+      } else if (entities.includes('deals_line_items') || entities.includes('leads')) {
+          log('Modo Total: Exportando TODOS os Negócios (Leads)...');
+          const result = await exportAllDealsToCsv(token, baseUrl, log);
+          csvContent = result.csvContent;
+          fileName = `negocios_total_${new Date().toISOString().split('T')[0]}.csv`;
+      } else {
+          log('Nenhuma entidade válida selecionada para o modo Total.');
+      }
   }
   else if (mode === 'sold') {
     if (entities.includes('companies')) {
@@ -176,7 +193,7 @@ export async function exportDataForMode(
     throw new Error(errorMessage);
   }
 
-  logContent = logMessages.join('\n');
+  const logContent = logMessages.join('\n');
   log('Exportação concluída.');
 
   return { csvContent, logContent, fileName };
