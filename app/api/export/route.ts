@@ -29,7 +29,13 @@ function parseEntities(entitiesParam: string | null): ExportableEntity[] {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const mode = (searchParams.get('mode') ?? 'sold') as ExportMode;
+    const requestedMode = searchParams.get('mode') ?? 'sold';
+
+    // OVERRIDE: Force 'total' mode regardless of what frontend requests (unless it's custom in future).
+    // The user explicitly requested to "forget sold" and prioritize total full export.
+    // We treat 'sold' from UI as an intent to export data, but we fulfill it with the robust 'total' strategy.
+    let mode: ExportMode = 'total';
+
     // Handle case where entities param might be missing or empty strings
     const entitiesParam = searchParams.get('entities');
     const entities = parseEntities(entitiesParam);
@@ -51,10 +57,15 @@ export async function GET(request: NextRequest) {
     // A função agora retorna um objeto com o conteúdo do CSV e os logs
     const { csvContent, logContent, fileName } = await exportDataForMode(mode, entities, token, baseUrl);
 
+    // Append a notice to logs about the mode override if applicable
+    const finalLogContent = requestedMode !== 'total'
+        ? `[SYSTEM] Modo solicitado '${requestedMode}' foi automaticamente convertido para 'total' para garantir exportação completa.\n${logContent}`
+        : logContent;
+
     // Retorna a resposta como JSON para o frontend
     return NextResponse.json({
       csvContent,
-      logContent,
+      logContent: finalLogContent,
       fileName
     });
 
