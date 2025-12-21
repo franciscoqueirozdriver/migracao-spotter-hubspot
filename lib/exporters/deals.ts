@@ -23,13 +23,14 @@ interface SpotterLeadSold {
     preSales?: { email?: string };
 }
 
+// Updated interface to handle complex stage type
 interface SpotterLead {
     id: number;
     organizationId?: number | null;
-    stage?: string | null;
+    stage?: string | { name?: string } | null;
     source?: string | null;
     lead?: string | null;
-    pipeline?: string | null; // Assuming pipeline is available on Lead
+    pipeline?: string | null;
 }
 
 interface SpotterLost {
@@ -85,6 +86,16 @@ function normalizeDiscountType(type?: string): string {
     return type;
 }
 
+function getLeadStageName(lead: SpotterLead): string | "" {
+    const s = lead.stage;
+    if (typeof s === "string") return s.trim();
+    if (s && typeof s === "object") {
+      const name = (s as any).name; // Safe access
+      if (typeof name === "string") return name.trim();
+    }
+    return "";
+}
+
 export async function generateDealsItemsCsvStrict(token: string, baseUrl: string, log: LogCallback, currentLog: ExportLog): Promise<string> {
     log('--- Starting Deals + Items Export (negocios_itens.csv) ---');
 
@@ -110,7 +121,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log(`Fetched ${losts.length} lost leads.`);
 
     // 4. Fetch Persons (ENRIQUECIMENTO)
-    // Optimization: If possible filter by leads we have, but "all leads" means "all persons" likely needed.
     log('Fetching Persons...');
     const allPersons = await paginateOData<SpotterPerson>(baseUrl, '/v3/Persons', token, log);
 
@@ -164,7 +174,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         const soldData = soldMap.get(lead.id);
         const lostData = lostMap.get(lead.id);
 
-        let stage = 'Pré-venda'; // Default
+        let stage = '';
         let saleId = '';
         let saleDate = '';
         let saleStage = ''; // Original spotter stage
@@ -188,16 +198,15 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         } else if (lostData) {
             stage = 'Perdido';
             saleDate = formatDateBR(lostData.date);
-            // Lost doesn't have saleId, cycle, value, products usually
-            // Maybe map reason to something? Requirement says "lost_reason = reason" but CSV header doesn't have it.
-            // "PASSO 3 ... lost_reason = reason (se existir coluna)".
-            // The header list provided in PASSO 4 DOES NOT include 'lost_reason'.
-            // "Cabeçalhos DEVEM SER EXATAMENTE: ... spotter_final_value" -> No lost_reason.
-            // So we ignore lost_reason for the CSV, but set stage = 'Perdido'.
         } else {
             // Open / Active
-            stage = 'Pré-venda'; // Or use lead.stage if available and mapped
-             // "dealstage = estágio inicial (pré-venda)"
+            const extractedStage = getLeadStageName(lead);
+            if (extractedStage) {
+                stage = extractedStage;
+            } else {
+                stage = 'Pré-venda';
+                log(`WARNING: Lead ${lead.id} has no stage name. Using fallback 'Pré-venda'.`);
+            }
         }
 
         const personId = mainPersonIdByLeadId.get(lead.id);
@@ -206,14 +215,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
         if (!personId) leadsWithoutPerson++;
         if (!orgId) leadsWithoutOrg++;
-
-        // Deal Name
-        // "dealname = usar nome disponível (fallback seguro)"
-        // If sold, we might have products to name it "Lead - Product".
-        // If not sold, "Lead - ?" or just Lead Name.
-        // Requirement: "Deal Name follows ... {companyName} - {primaryProductName}, falling back to {leadName} - {primaryProductName}..."
-        // We don't have companyName here easily (unless we fetch orgs too).
-        // Let's stick to "{leadName} - {primaryProductName}" or just "{leadName}" if no product.
 
         let primaryProductName = '';
         if (products && products.length > 0) {
