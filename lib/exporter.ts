@@ -2,6 +2,8 @@
 import { generateCompaniesCsvStrict } from './exporters/companies';
 import { generateContactsCsvStrict } from './exporters/contacts';
 import { generateDealsItemsCsvStrict } from './exporters/deals';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
@@ -34,8 +36,32 @@ export interface ExportLog {
 // Global variable to store the last log (in-memory)
 let lastExportLog: ExportLog | null = null;
 
+// File path for persistent logging
+const LOG_FILE_PATH = path.join(process.cwd(), 'last_export_log.json');
+
+function saveLogToFile(log: ExportLog) {
+    try {
+        fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(log, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('Failed to save log to file:', e);
+    }
+}
+
 export function getLastLog(): ExportLog | null {
-  return lastExportLog;
+  // Try memory first
+  if (lastExportLog) return lastExportLog;
+
+  // Try file
+  try {
+      if (fs.existsSync(LOG_FILE_PATH)) {
+          const content = fs.readFileSync(LOG_FILE_PATH, 'utf-8');
+          return JSON.parse(content) as ExportLog;
+      }
+  } catch (e) {
+      console.error('Failed to read log from file:', e);
+  }
+
+  return null;
 }
 
 //region --- Função de Exportação Principal ---
@@ -92,6 +118,7 @@ export async function exportDataForMode(
 
       currentLog.finishedAt = new Date().toISOString();
       lastExportLog = currentLog; // Update global log on success
+      saveLogToFile(currentLog); // Persist to file
 
   } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -99,6 +126,7 @@ export async function exportDataForMode(
       currentLog.errors.push(errorMsg);
       currentLog.finishedAt = new Date().toISOString();
       lastExportLog = currentLog; // Update global log on failure too
+      saveLogToFile(currentLog); // Persist to file
       throw err;
   }
 
