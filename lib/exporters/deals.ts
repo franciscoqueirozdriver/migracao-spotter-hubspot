@@ -207,7 +207,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         'origem_comercial_real',
         'spotter_organization_id',
         'spotter_person_id',
-        'Nome',
+        'Produto', // Renamed from 'Nome'
         'Quantidade',
         'Preço unitário',
         'spotter_product_id',
