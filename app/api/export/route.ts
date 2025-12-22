@@ -7,12 +7,6 @@ export const maxDuration = 300;
 
 const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
 
-function toSingle(value: string | string[] | null | undefined): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
-
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -42,9 +36,7 @@ export async function GET(request: NextRequest) {
     }
 
     const entity = entityParam as ExportableEntity;
-
-    // Force 'total' mode
-    const mode: ExportMode = 'total';
+    const mode: ExportMode = 'total'; // Force 'total' mode as per current requirement
 
     const token = process.env.SPOTTER_TOKEN_EXACT;
     const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
@@ -58,12 +50,13 @@ export async function GET(request: NextRequest) {
 
     const { csvContent, fileName } = await exportDataForMode(mode, entity, token, baseUrl);
 
-    // Retornar CSV direto
+    // Retornar CSV direto (One-Shot)
     return new NextResponse(csvContent, {
         status: 200,
         headers: {
             'Content-Type': 'text/csv; charset=utf-8',
-            'Content-Disposition': `attachment; filename="${fileName}"`
+            'Content-Disposition': `attachment; filename="${fileName}"`,
+            'Cache-Control': 'no-store'
         }
     });
 

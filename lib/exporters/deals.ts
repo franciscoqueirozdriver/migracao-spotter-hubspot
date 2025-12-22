@@ -43,6 +43,12 @@ interface SpotterPerson {
     id: number;
     leadId?: number | null;
     mainContact?: boolean | null;
+    name?: string; // Added to support person name resolution
+}
+
+interface SpotterOrg {
+    id: number;
+    name: string;
 }
 
 interface RecommendedProduct {
@@ -53,6 +59,12 @@ interface RecommendedProduct {
     amount?: number;
     descountType?: string; // Correcting likely typo 'descount' to 'discount' usage but API says 'descountType'
     descountValue?: number;
+}
+
+interface SpotterProduct {
+    id: number;
+    name?: string;
+    description?: string;
 }
 
 // SAFE STRING LOWERCASE HELPER
@@ -106,6 +118,12 @@ function getLeadStageName(lead: SpotterLead): string | "" {
     return "";
 }
 
+function getFirstTwoWords(name?: string | null): string {
+    if (!name) return '';
+    const parts = name.trim().split(/\s+/);
+    return parts.slice(0, 2).join(' ');
+}
+
 export async function generateDealsItemsCsvStrict(token: string, baseUrl: string, log: LogCallback, currentLog: ExportLog): Promise<string> {
     log('--- Starting Deals + Items Export (negocios_itens.csv) ---');
 
@@ -131,9 +149,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
     // 4. Fetch Recommended Products (ENRIQUECIMENTO - Abertos)
     log('Fetching Recommended Products...');
-    // Note: Assuming endpoint is /v3/recommendedProducts as per instruction
     const recommended = await paginateOData<RecommendedProduct>(baseUrl, '/v3/recommendedProducts', token, log);
-    // Add to logs (using any/extension for now as interface might not have it yet, or assume it does in next step)
     (currentLog.totals as any).recommendedFetched = recommended.length;
 
     const recommendedMap = new Map<number, RecommendedProduct[]>();
@@ -143,6 +159,13 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         recommendedMap.set(rp.leadId, list);
     }
     log(`Fetched ${recommended.length} recommended products.`);
+
+    // NEW: Fetch Product Catalog
+    log('Fetching Product Catalog...');
+    const products = await paginateOData<SpotterProduct>(baseUrl, '/v3/products', token, log);
+    (currentLog.totals as any).productsCatalogFetched = products.length;
+    const productsById = new Map(products.map(p => [p.id, p]));
+    log(`Fetched ${products.length} catalog products.`);
 
     // 5. Fetch Persons (ENRIQUECIMENTO)
     log('Fetching Persons...');
@@ -161,6 +184,12 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         const main = persons.find(p => p.mainContact) ?? persons[0];
         if (main) mainPersonIdByLeadId.set(leadId, main.id);
     }
+
+    // NEW: Fetch Organizations to get Company Name
+    log('Fetching Organizations...');
+    const allOrgs = await paginateOData<SpotterOrg>(baseUrl, '/v3/organization', token, log);
+    const orgsById = new Map(allOrgs.map(o => [o.id, o]));
+    log(`Fetched ${allOrgs.length} organizations.`);
 
     // Headers
     const headers = [
@@ -192,15 +221,18 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     let lineItemsGenerated = 0;
     let leadsWithoutOrg = 0;
     let leadsWithoutPerson = 0;
-
-    // Counters for audit
     let itemsFromSold = 0;
     let itemsFromRecommended = 0;
+    let itemNameFallbackCount = 0;
 
     for (const lead of allLeads) {
         const soldData = soldMap.get(lead.id);
         const lostData = lostMap.get(lead.id);
         const recommendedData = recommendedMap.get(lead.id) ?? [];
+        const personId = mainPersonIdByLeadId.get(lead.id);
+        const orgId = lead.organizationId;
+        const org = orgId ? orgsById.get(orgId) : undefined;
+        const mainPerson = personId ? personsByLead.get(lead.id)?.find(p => p.id === personId) : undefined;
 
         let stage = '';
         let saleId = '';
@@ -211,8 +243,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         let salesRepEmail = '';
         let preSalesEmail = '';
 
-        // We will build a unified list of "items" to export
-        // Each item has: name, qty, price, id, discountAmt, discountType, finalVal
         interface LineItem {
             name: string;
             qty: number;
@@ -221,6 +251,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             discAmt: number;
             discType: string;
             finalVal: number;
+            productIdForNameRes?: number;
         }
         let itemsToExport: LineItem[] = [];
 
@@ -241,88 +272,108 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
 
-            // Map sold products
-            itemsToExport = (soldData.products ?? []).map(p => ({
-                name: p.name ?? `Produto ${p.id}`,
-                qty: p.quantity ?? 1,
-                price: p.individualValue ?? 0,
-                id: String(p.id),
-                discAmt: p.discountAmount ?? 0,
-                discType: normalizeDiscountType(p.discountType),
-                finalVal: p.finalValue ?? 0
-            }));
+            itemsToExport = (soldData.products ?? []).map(p => {
+                // Name resolution: check catalog first using ID
+                let name = '';
+                const catalogDesc = productsById.get(p.id)?.description;
+                if (catalogDesc) {
+                    name = catalogDesc;
+                } else {
+                    name = p.name ?? `Produto ${p.id}`;
+                    if (!p.name) itemNameFallbackCount++;
+                }
+
+                return {
+                    name: name,
+                    qty: p.quantity ?? 1,
+                    price: p.individualValue ?? 0,
+                    id: String(p.id),
+                    discAmt: p.discountAmount ?? 0,
+                    discType: normalizeDiscountType(p.discountType),
+                    finalVal: p.finalValue ?? 0,
+                    productIdForNameRes: p.id
+                };
+            });
 
             itemsFromSold += itemsToExport.length;
 
         } else if (lostData) {
             // Case 2: Lost
-            // "stage do Lost (nome da etapa de descarte)"
-            // If lostData.stage exists, use it. If not, maybe reason?
-            // Requirement says: "Etapa do negócio = stage do Lost"
             stage = lostData.stage ?? '';
             if (!stage) {
                 log(`WARNING: Lost Lead ${lead.id} has no stage. Using empty string.`);
-                // If strict requirement allows reason fallback? "stage do Lost (nome da etapa de descarte)"
-                // Assuming strict adherence to 'stage' property existence.
             }
 
             saleDate = formatDateBR(lostData.date);
-            // No items for Lost
             itemsToExport = [];
 
         } else {
-            // Case 3: Open (Not Sold, Not Lost)
+            // Case 3: Open
             const extractedStage = getLeadStageName(lead);
             if (extractedStage) {
                 stage = extractedStage;
             } else {
-                // Requirement: "PROIBIDO preencher “Pré-venda” como fallback genérico"
-                // "Nesses casos, preencher com string vazia "" (não inventar valor)"
                 stage = '';
                 log(`WARNING: Open Lead ${lead.id} has no stage name. Using empty string.`);
             }
 
-            // Map recommended products for Open leads
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
-                // Price logic: labelValue OR amount/quantity
                 let price = p.labelValue ?? 0;
                 if (price === 0 && (p.amount ?? 0) > 0 && qty > 0) {
                     price = (p.amount ?? 0) / qty;
                 }
 
+                // Name resolution
+                let name = '';
+                const catalogDesc = productsById.get(p.productId)?.description;
+                if (catalogDesc) {
+                    name = catalogDesc;
+                } else {
+                    name = `Produto ${p.productId}`;
+                    itemNameFallbackCount++;
+                }
+
                 return {
-                    name: `Produto ${p.productId}`, // Fallback as we don't have name in recommended payload usually
+                    name: name,
                     qty: qty,
                     price: price,
                     id: String(p.productId),
                     discAmt: p.descountValue ?? 0,
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: p.amount ?? 0
+                    finalVal: p.amount ?? 0,
+                    productIdForNameRes: p.productId
                 };
             });
 
             itemsFromRecommended += itemsToExport.length;
         }
 
-        const personId = mainPersonIdByLeadId.get(lead.id);
-        const orgId = lead.organizationId;
         const origem = mapOrigemComercialReal(lead.source ?? undefined);
 
         if (!personId) leadsWithoutPerson++;
         if (!orgId) leadsWithoutOrg++;
 
-        // Deal Name
-        let dealName = lead.lead ?? `Lead ${lead.id}`;
-        // If items exist, append first product name?
-        // Logic was: {leadName} - {primaryProductName}
-        if (itemsToExport.length > 0) {
-            dealName = `${dealName} - ${itemsToExport[0].name}`;
+        // Base Name Resolution for Deal
+        let baseName = '';
+        if (org) {
+            baseName = org.name;
+        } else if (mainPerson && mainPerson.name) {
+            baseName = mainPerson.name;
+        } else if (lead.lead) {
+            baseName = lead.lead;
+        } else {
+             baseName = `Lead ${lead.id}`;
         }
+
+        const firstTwo = getFirstTwoWords(baseName);
 
         // GENERATE ROWS
         if (itemsToExport.length > 0) {
             for (const item of itemsToExport) {
+                // Deal Name Logic: "<2 words> | <Item Name>"
+                const dealName = `${firstTwo} | ${item.name}`;
+
                 rows.push([
                     dealName,
                     'default',
@@ -349,7 +400,16 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 lineItemsGenerated++;
             }
         } else {
-            // 1 row, empty items
+            // 1 row, empty items. Fallback dealname?
+            // User spec implies dealname logic applies when "montar itens".
+            // If no items (e.g. Lost), what name?
+            // Requirement says "Sempre formar ... ao montar negócio".
+            // But if no product description, we can't do "| Description".
+            // Let's fallback to just "Lead - Stage" or similar, or just Base Name.
+            // Strict rule was for "recommended/sold".
+            // Let's just use baseName for Lost/Empty cases to be safe.
+            const dealName = baseName;
+
             rows.push([
                 dealName,
                 'default',
@@ -376,9 +436,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     currentLog.discards.leadsWithoutOrg = leadsWithoutOrg;
     currentLog.discards.leadsWithoutPerson = leadsWithoutPerson;
 
-    // Add extra stats if possible or just log them
     (currentLog.totals as any).itemsFromSold = itemsFromSold;
     (currentLog.totals as any).itemsFromRecommended = itemsFromRecommended;
+    (currentLog.totals as any).itemNameFallbackCount = itemNameFallbackCount;
 
     const csvContent = generateCsvFromRows(headers, rows);
     return '\ufeff' + csvContent;
