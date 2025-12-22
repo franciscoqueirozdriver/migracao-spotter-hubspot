@@ -23,7 +23,6 @@ interface SpotterLeadSold {
     preSales?: { email?: string };
 }
 
-// Updated interface to handle complex stage type
 interface SpotterLead {
     id: number;
     organizationId?: number | null;
@@ -37,12 +36,23 @@ interface SpotterLost {
     leadId: number;
     date: string;
     reason?: string;
+    stage?: string; // Adding based on requirement "stage do Lost"
 }
 
 interface SpotterPerson {
     id: number;
     leadId?: number | null;
     mainContact?: boolean | null;
+}
+
+interface RecommendedProduct {
+    leadId: number;
+    productId: number;
+    quantity: number;
+    labelValue?: number;
+    amount?: number;
+    descountType?: string; // Correcting likely typo 'descount' to 'discount' usage but API says 'descountType'
+    descountValue?: number;
 }
 
 // SAFE STRING LOWERCASE HELPER
@@ -103,7 +113,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Leads (Base)...');
     const allLeads = await paginateOData<SpotterLead>(baseUrl, '/v3/Leads', token, log);
     currentLog.totals.leadsFetched = allLeads.length;
-    const leadsMap = new Map(allLeads.map(l => [l.id, l]));
     log(`Fetched ${allLeads.length} leads.`);
 
     // 2. Fetch Sold (ENRIQUECIMENTO)
@@ -120,7 +129,22 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     const lostMap = new Map(losts.map(l => [l.leadId, l]));
     log(`Fetched ${losts.length} lost leads.`);
 
-    // 4. Fetch Persons (ENRIQUECIMENTO)
+    // 4. Fetch Recommended Products (ENRIQUECIMENTO - Abertos)
+    log('Fetching Recommended Products...');
+    // Note: Assuming endpoint is /v3/recommendedProducts as per instruction
+    const recommended = await paginateOData<RecommendedProduct>(baseUrl, '/v3/recommendedProducts', token, log);
+    // Add to logs (using any/extension for now as interface might not have it yet, or assume it does in next step)
+    (currentLog.totals as any).recommendedFetched = recommended.length;
+
+    const recommendedMap = new Map<number, RecommendedProduct[]>();
+    for (const rp of recommended) {
+        const list = recommendedMap.get(rp.leadId) ?? [];
+        list.push(rp);
+        recommendedMap.set(rp.leadId, list);
+    }
+    log(`Fetched ${recommended.length} recommended products.`);
+
+    // 5. Fetch Persons (ENRIQUECIMENTO)
     log('Fetching Persons...');
     const allPersons = await paginateOData<SpotterPerson>(baseUrl, '/v3/Persons', token, log);
 
@@ -169,24 +193,46 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     let leadsWithoutOrg = 0;
     let leadsWithoutPerson = 0;
 
+    // Counters for audit
+    let itemsFromSold = 0;
+    let itemsFromRecommended = 0;
+
     for (const lead of allLeads) {
-        // Determine status and enrichment data
         const soldData = soldMap.get(lead.id);
         const lostData = lostMap.get(lead.id);
+        const recommendedData = recommendedMap.get(lead.id) ?? [];
 
         let stage = '';
         let saleId = '';
         let saleDate = '';
-        let saleStage = ''; // Original spotter stage
+        let saleStage = '';
         let cycle = '';
         let totalValue = '0';
         let salesRepEmail = '';
         let preSalesEmail = '';
-        let products: SpotterLeadSold['products'] = [];
 
-        // Priority: Sold > Lost > Open
+        // We will build a unified list of "items" to export
+        // Each item has: name, qty, price, id, discountAmt, discountType, finalVal
+        interface LineItem {
+            name: string;
+            qty: number;
+            price: number;
+            id: string;
+            discAmt: number;
+            discType: string;
+            finalVal: number;
+        }
+        let itemsToExport: LineItem[] = [];
+
+        // STRICT LOGIC: Sold > Lost > Lead
+
         if (soldData) {
-            stage = 'Vendido';
+            // Case 1: Sold
+            stage = soldData.saleStage ?? '';
+            if (!stage) {
+                log(`WARNING: Sold Lead ${lead.id} has no saleStage. Using empty string.`);
+            }
+
             saleId = String(soldData.id);
             saleDate = formatDateBR(soldData.saleDate);
             saleStage = soldData.saleStage ?? '';
@@ -194,19 +240,69 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             totalValue = String(soldData.totalDealValue ?? 0);
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
-            products = soldData.products ?? [];
+
+            // Map sold products
+            itemsToExport = (soldData.products ?? []).map(p => ({
+                name: p.name ?? `Produto ${p.id}`,
+                qty: p.quantity ?? 1,
+                price: p.individualValue ?? 0,
+                id: String(p.id),
+                discAmt: p.discountAmount ?? 0,
+                discType: normalizeDiscountType(p.discountType),
+                finalVal: p.finalValue ?? 0
+            }));
+
+            itemsFromSold += itemsToExport.length;
+
         } else if (lostData) {
-            stage = 'Perdido';
+            // Case 2: Lost
+            // "stage do Lost (nome da etapa de descarte)"
+            // If lostData.stage exists, use it. If not, maybe reason?
+            // Requirement says: "Etapa do negócio = stage do Lost"
+            stage = lostData.stage ?? '';
+            if (!stage) {
+                log(`WARNING: Lost Lead ${lead.id} has no stage. Using empty string.`);
+                // If strict requirement allows reason fallback? "stage do Lost (nome da etapa de descarte)"
+                // Assuming strict adherence to 'stage' property existence.
+            }
+
             saleDate = formatDateBR(lostData.date);
+            // No items for Lost
+            itemsToExport = [];
+
         } else {
-            // Open / Active
+            // Case 3: Open (Not Sold, Not Lost)
             const extractedStage = getLeadStageName(lead);
             if (extractedStage) {
                 stage = extractedStage;
             } else {
-                stage = 'Pré-venda';
-                log(`WARNING: Lead ${lead.id} has no stage name. Using fallback 'Pré-venda'.`);
+                // Requirement: "PROIBIDO preencher “Pré-venda” como fallback genérico"
+                // "Nesses casos, preencher com string vazia "" (não inventar valor)"
+                stage = '';
+                log(`WARNING: Open Lead ${lead.id} has no stage name. Using empty string.`);
             }
+
+            // Map recommended products for Open leads
+            itemsToExport = recommendedData.map(p => {
+                const qty = p.quantity ?? 1;
+                // Price logic: labelValue OR amount/quantity
+                let price = p.labelValue ?? 0;
+                if (price === 0 && (p.amount ?? 0) > 0 && qty > 0) {
+                    price = (p.amount ?? 0) / qty;
+                }
+
+                return {
+                    name: `Produto ${p.productId}`, // Fallback as we don't have name in recommended payload usually
+                    qty: qty,
+                    price: price,
+                    id: String(p.productId),
+                    discAmt: p.descountValue ?? 0,
+                    discType: normalizeDiscountType(p.descountType),
+                    finalVal: p.amount ?? 0
+                };
+            });
+
+            itemsFromRecommended += itemsToExport.length;
         }
 
         const personId = mainPersonIdByLeadId.get(lead.id);
@@ -216,20 +312,17 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         if (!personId) leadsWithoutPerson++;
         if (!orgId) leadsWithoutOrg++;
 
-        let primaryProductName = '';
-        if (products && products.length > 0) {
-            primaryProductName = products[0].name ?? `Produto ${products[0].id}`;
-        }
-
+        // Deal Name
         let dealName = lead.lead ?? `Lead ${lead.id}`;
-        if (primaryProductName) {
-            dealName = `${dealName} - ${primaryProductName}`;
+        // If items exist, append first product name?
+        // Logic was: {leadName} - {primaryProductName}
+        if (itemsToExport.length > 0) {
+            dealName = `${dealName} - ${itemsToExport[0].name}`;
         }
 
-        // Generate Rows
-        if (stage === 'Vendido' && products && products.length > 0) {
-            // Generate 1 row per product
-            for (const product of products) {
+        // GENERATE ROWS
+        if (itemsToExport.length > 0) {
+            for (const item of itemsToExport) {
                 rows.push([
                     dealName,
                     'default',
@@ -245,25 +338,23 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     origem,
                     String(orgId ?? ''),
                     String(personId ?? ''),
-                    product.name ?? '',
-                    String(product.quantity ?? 1),
-                    String(product.individualValue ?? 0),
-                    String(product.id),
-                    String(product.discountAmount ?? 0),
-                    normalizeDiscountType(product.discountType),
-                    String(product.finalValue ?? 0)
+                    item.name,
+                    String(item.qty),
+                    String(item.price),
+                    item.id,
+                    String(item.discAmt),
+                    item.discType,
+                    String(item.finalVal)
                 ]);
                 lineItemsGenerated++;
             }
-            dealsGenerated++; // Count deal once (conceptually)
         } else {
-            // Open or Lost, or Sold but no products
-            // Generate 1 row with empty product info
+            // 1 row, empty items
             rows.push([
                 dealName,
                 'default',
                 stage,
-                saleId, // Might be empty if not sold
+                saleId,
                 String(lead.id),
                 saleDate,
                 saleStage,
@@ -274,22 +365,20 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 origem,
                 String(orgId ?? ''),
                 String(personId ?? ''),
-                '', // Nome
-                '', // Quantidade
-                '', // Preço unitário
-                '', // spotter_product_id
-                '', // discount amount
-                '', // discount type
-                ''  // final value
+                '', '', '', '', '', '', ''
             ]);
-            dealsGenerated++;
         }
+        dealsGenerated++;
     }
 
     currentLog.totals.dealsGenerated = dealsGenerated;
     currentLog.totals.lineItemsGenerated = lineItemsGenerated;
     currentLog.discards.leadsWithoutOrg = leadsWithoutOrg;
     currentLog.discards.leadsWithoutPerson = leadsWithoutPerson;
+
+    // Add extra stats if possible or just log them
+    (currentLog.totals as any).itemsFromSold = itemsFromSold;
+    (currentLog.totals as any).itemsFromRecommended = itemsFromRecommended;
 
     const csvContent = generateCsvFromRows(headers, rows);
     return '\ufeff' + csvContent;
