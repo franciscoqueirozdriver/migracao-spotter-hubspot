@@ -93,7 +93,6 @@ export default function HomePage() {
               const data = await res.json();
               setLogs(data);
           } else {
-             // If 404 just ignore or clear
              if (res.status === 404) setLogs(null);
           }
       } catch (e) {
@@ -101,6 +100,16 @@ export default function HomePage() {
       } finally {
           setLoadingLogs(false);
       }
+  };
+
+  const copyLogs = () => {
+      if (!logs) return;
+      const text = JSON.stringify(logs, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+          alert("Logs copiados para a área de transferência!");
+      }).catch(err => {
+          console.error('Falha ao copiar:', err);
+      });
   };
 
   return (
@@ -148,15 +157,22 @@ export default function HomePage() {
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <h2 style={{ fontSize: '1.2rem', margin: 0 }}>2. Auditoria e Logs</h2>
-            <button onClick={fetchLogs} disabled={loadingLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
-                {loadingLogs ? 'Atualizando...' : 'Atualizar Logs'}
-            </button>
+            <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={fetchLogs} disabled={loadingLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
+                    {loadingLogs ? 'Atualizando...' : 'Atualizar Logs'}
+                </button>
+                {logs && (
+                    <button onClick={copyLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
+                        Copiar JSON
+                    </button>
+                )}
+            </div>
           </div>
 
           {!logs ? (
               <p style={{ color: '#777' }}>Nenhum log disponível. Execute uma exportação para gerar logs.</p>
           ) : (
-              <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', fontSize: '0.9rem', overflowX: 'auto' }}>
+              <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', fontSize: '0.9rem', overflowX: 'auto', maxHeight: '500px' }}>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Entidade:</strong> {logs.entity}</div>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Início:</strong> {new Date(logs.startedAt).toLocaleString()}</div>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Fim:</strong> {logs.finishedAt ? new Date(logs.finishedAt).toLocaleString() : 'Em andamento...'}</div>
@@ -177,8 +193,7 @@ export default function HomePage() {
                       <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem', color: '#f57c00' }}>
                           <strong>Avisos ({logs.warnings.length}):</strong>
                           <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
-                              {logs.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
-                              {logs.warnings.length > 5 && <li>...e mais {logs.warnings.length - 5}</li>}
+                              {logs.warnings.map((w, i) => <li key={i}>{w}</li>)}
                           </ul>
                       </div>
                   )}

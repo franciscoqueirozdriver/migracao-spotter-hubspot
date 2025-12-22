@@ -280,7 +280,10 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     name = catalogDesc;
                 } else {
                     name = p.name ?? `Produto ${p.id}`;
-                    if (!p.name) itemNameFallbackCount++;
+                    if (!p.name) {
+                        itemNameFallbackCount++;
+                        log(`WARN_PRODUCT_NOT_FOUND: Product ${p.id} has no name in Sold Lead ${lead.id} and not in Catalog.`);
+                    }
                 }
 
                 return {
@@ -319,9 +322,10 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
-                let price = p.labelValue ?? 0;
-                if (price === 0 && (p.amount ?? 0) > 0 && qty > 0) {
-                    price = (p.amount ?? 0) / qty;
+                // STRICT: Use labelValue. Log if 0.
+                const price = p.labelValue ?? 0;
+                if (price === 0) {
+                     log(`WARN_UNIT_PRICE_ZERO: Recommended Product ${p.productId} for Lead ${lead.id} has labelValue 0.`);
                 }
 
                 // Name resolution
@@ -332,6 +336,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 } else {
                     name = `Produto ${p.productId}`;
                     itemNameFallbackCount++;
+                    log(`WARN_PRODUCT_NOT_FOUND: Recommended Product ${p.productId} for Lead ${lead.id} not found in Catalog.`);
                 }
 
                 return {
@@ -401,13 +406,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             }
         } else {
             // 1 row, empty items. Fallback dealname?
-            // User spec implies dealname logic applies when "montar itens".
-            // If no items (e.g. Lost), what name?
-            // Requirement says "Sempre formar ... ao montar negócio".
-            // But if no product description, we can't do "| Description".
-            // Let's fallback to just "Lead - Stage" or similar, or just Base Name.
-            // Strict rule was for "recommended/sold".
-            // Let's just use baseName for Lost/Empty cases to be safe.
             const dealName = baseName;
 
             rows.push([

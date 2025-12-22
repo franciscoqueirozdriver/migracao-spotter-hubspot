@@ -91,9 +91,8 @@ export async function exportDataForMode(
     logMessages.push(msg);
     console.log(msg); // Ensure it logs to backend console
 
-    // Simple heuristic to classify warnings/errors from string messages if needed,
-    // though ideally we push directly to arrays.
-    if (message.includes('WARNING')) currentLog.warnings.push(message);
+    // Improved heuristic to classify warnings/errors
+    if (message.includes('WARNING') || message.includes('WARN_')) currentLog.warnings.push(message);
     if (message.includes('ERROR') || message.includes('FATAL')) currentLog.errors.push(message);
   };
 
