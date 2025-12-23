@@ -2,13 +2,14 @@
 import { generateCompaniesCsvStrict } from './exporters/companies';
 import { generateContactsCsvStrict } from './exporters/contacts';
 import { generateDealsItemsCsvStrict } from './exporters/deals';
-import * as fs from 'fs';
-import * as path from 'path';
+import { appendLog, clearLogs } from './export/exportLogger';
 
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads';
 
+// Kept for backward compatibility with exporters if they use it,
+// but main logging is now via exportLogger
 export interface ExportLog {
   startedAt: string;
   finishedAt?: string;
@@ -21,7 +22,6 @@ export interface ExportLog {
     lostFetched?: number;
     dealsGenerated?: number;
     lineItemsGenerated?: number;
-    // Generic counters for other entities
     recordsFetched?: number;
     recordsGenerated?: number;
   };
@@ -31,38 +31,7 @@ export interface ExportLog {
   };
   warnings: string[];
   errors: string[];
-  lines: string[]; // Full text log buffer
-}
-
-// Global variable to store the last log (in-memory)
-let lastExportLog: ExportLog | null = null;
-
-// File path for persistent logging
-const LOG_FILE_PATH = path.join(process.cwd(), 'last_export_log.json');
-
-function saveLogToFile(log: ExportLog) {
-    try {
-        fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(log, null, 2), 'utf-8');
-    } catch (e) {
-        console.error('Failed to save log to file:', e);
-    }
-}
-
-export function getLastLog(): ExportLog | null {
-  // Try memory first
-  if (lastExportLog) return lastExportLog;
-
-  // Try file
-  try {
-      if (fs.existsSync(LOG_FILE_PATH)) {
-          const content = fs.readFileSync(LOG_FILE_PATH, 'utf-8');
-          return JSON.parse(content) as ExportLog;
-      }
-  } catch (e) {
-      console.error('Failed to read log from file:', e);
-  }
-
-  return null;
+  lines: string[];
 }
 
 //region --- Função de Exportação Principal ---
@@ -73,12 +42,16 @@ export async function exportDataForMode(
   baseUrl: string
 ): Promise<{ csvContent: string, logContent: string, fileName: string }> {
 
-  // Initialize the log object
+  // Clear previous logs for a fresh start
+  clearLogs();
+  appendLog(`--- Nova Execução: ${entity} [${mode}] ---`);
+
+  // Legacy object to satisfy exporter signatures, but primary log is the buffer
   const currentLog: ExportLog = {
     startedAt: new Date().toISOString(),
     entity,
     modeRequested: mode,
-    modeApplied: 'total', // We force 'total' as per requirements
+    modeApplied: 'total',
     totals: {},
     discards: {},
     warnings: [],
@@ -86,15 +59,9 @@ export async function exportDataForMode(
     lines: []
   };
 
-  // Helper to append messages to warnings/errors and also keep a string buffer for legacy reasons if needed
-  const logMessages: string[] = [];
   const log: LogCallback = (message) => {
-    const msg = `[${new Date().toISOString()}] ${message}`;
-    logMessages.push(msg);
-    currentLog.lines.push(msg); // Add to persistent log lines
-    console.log(msg); // Ensure it logs to backend console
-
-    // Improved heuristic to classify warnings/errors
+    appendLog(message);
+    // Also keep legacy struct synced if needed for debugging, though UI now uses API
     if (message.includes('WARNING') || message.includes('WARN_')) currentLog.warnings.push(message);
     if (message.includes('ERROR') || message.includes('FATAL')) currentLog.errors.push(message);
   };
@@ -119,22 +86,17 @@ export async function exportDataForMode(
       }
 
       currentLog.finishedAt = new Date().toISOString();
-      lastExportLog = currentLog; // Update global log on success
-      saveLogToFile(currentLog); // Persist to file
+      log('Exportação concluída com sucesso.');
 
   } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log(`ERRO FATAL: ${errorMsg}`);
       currentLog.errors.push(errorMsg);
       currentLog.finishedAt = new Date().toISOString();
-      lastExportLog = currentLog; // Update global log on failure too
-      saveLogToFile(currentLog); // Persist to file
       throw err;
   }
 
-  const logContent = logMessages.join('\n');
-  log('Exportação concluída com sucesso.');
-
-  return { csvContent, logContent, fileName };
+  // Return empty logContent string as UI now fetches from API
+  return { csvContent, logContent: '', fileName };
 }
 //endregion

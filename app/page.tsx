@@ -2,40 +2,15 @@
 
 import React, { useState } from 'react';
 
-type ExportMode = 'total';
 type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
-
-interface ExportLog {
-  startedAt: string;
-  finishedAt?: string;
-  entity: string;
-  modeRequested: string;
-  modeApplied: string;
-  totals: {
-    leadsFetched?: number;
-    soldFetched?: number;
-    lostFetched?: number;
-    dealsGenerated?: number;
-    lineItemsGenerated?: number;
-    recordsFetched?: number;
-    recordsGenerated?: number;
-  };
-  discards: {
-    leadsWithoutOrg?: number;
-    leadsWithoutPerson?: number;
-  };
-  warnings: string[];
-  errors: string[];
-  lines?: string[]; // Added lines property
-}
 
 export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeExport, setActiveExport] = useState<ExportableEntity | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Log state
-  const [logs, setLogs] = useState<ExportLog | null>(null);
+  // Log state: simple array of strings
+  const [logs, setLogs] = useState<string[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
   const startExport = async (entity: ExportableEntity) => {
@@ -44,8 +19,9 @@ export default function HomePage() {
     setIsLoading(true);
     setActiveExport(entity);
     setError(null);
+    setLogs([]); // Clear local logs on new start
 
-    // Refresh logs once before starting to clear previous state if needed
+    // Initial check
     fetchLogs();
 
     try {
@@ -78,11 +54,12 @@ export default function HomePage() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      // Auto-refresh logs after success
+      // Final log refresh
       fetchLogs();
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
+      fetchLogs(); // Fetch logs even on error to see what happened
     } finally {
       setIsLoading(false);
       setActiveExport(null);
@@ -92,12 +69,10 @@ export default function HomePage() {
   const fetchLogs = async () => {
       setLoadingLogs(true);
       try {
-          const res = await fetch('/api/export/logs');
+          const res = await fetch('/api/export/logs', { cache: 'no-store' });
           if (res.ok) {
               const data = await res.json();
-              setLogs(data);
-          } else {
-             if (res.status === 404) setLogs(null);
+              setLogs(data.lines ?? []);
           }
       } catch (e) {
           console.error('Failed to fetch logs', e);
@@ -107,13 +82,11 @@ export default function HomePage() {
   };
 
   const copyLogs = () => {
-      if (!logs) return;
-      const text = JSON.stringify(logs, null, 2);
+      if (logs.length === 0) return;
+      const text = logs.join('\n');
       navigator.clipboard.writeText(text).then(() => {
-          alert("Logs copiados para a área de transferência!");
-      }).catch(err => {
-          console.error('Falha ao copiar:', err);
-      });
+          alert("Logs copiados!");
+      }).catch(console.error);
   };
 
   return (
@@ -121,7 +94,6 @@ export default function HomePage() {
       <h1>Migração Spotter → HubSpot</h1>
       <p>Exportação de dados (Modo Total - Auditoria Completa)</p>
 
-      {/* SEÇÃO 1 - EXPORTAÇÃO */}
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9', marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>1. Exportar CSV</h2>
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
@@ -157,7 +129,6 @@ export default function HomePage() {
         )}
       </div>
 
-      {/* SEÇÃO 2 - LOGS */}
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <h2 style={{ fontSize: '1.2rem', margin: 0 }}>2. Auditoria e Logs</h2>
@@ -165,73 +136,27 @@ export default function HomePage() {
                 <button onClick={fetchLogs} disabled={loadingLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
                     {loadingLogs ? 'Atualizando...' : 'Atualizar Logs'}
                 </button>
-                {logs && (
-                    <button onClick={copyLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
-                        Copiar JSON
-                    </button>
-                )}
+                <button onClick={copyLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
+                    Copiar
+                </button>
             </div>
           </div>
 
-          {!logs ? (
-              <p style={{ color: '#777' }}>Nenhum log disponível. Execute uma exportação para gerar logs.</p>
-          ) : (
-              <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', fontSize: '0.9rem', overflowX: 'auto', maxHeight: '600px' }}>
-                  <div style={{ marginBottom: '0.5rem' }}><strong>Entidade:</strong> {logs.entity}</div>
-                  <div style={{ marginBottom: '0.5rem' }}><strong>Início:</strong> {new Date(logs.startedAt).toLocaleString()}</div>
-                  <div style={{ marginBottom: '0.5rem' }}><strong>Fim:</strong> {logs.finishedAt ? new Date(logs.finishedAt).toLocaleString() : 'Em andamento...'}</div>
-
-                  <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem' }}>
-                      <strong>Totais:</strong>
-                      <pre style={{ margin: 0 }}>{JSON.stringify(logs.totals, null, 2)}</pre>
-                  </div>
-
-                  {logs.lines && logs.lines.length > 0 && (
-                      <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem' }}>
-                          <strong>Detalhes do Log:</strong>
-                          <pre style={{
-                              backgroundColor: '#eaeaea',
-                              padding: '10px',
-                              borderRadius: '4px',
-                              maxHeight: '300px',
-                              overflowY: 'auto',
-                              whiteSpace: 'pre-wrap',
-                              fontSize: '0.8rem',
-                              color: '#333',
-                              fontFamily: 'monospace'
-                          }}>
-                              {logs.lines.join('\n')}
-                          </pre>
-                      </div>
-                  )}
-
-                  {logs.discards && Object.keys(logs.discards).length > 0 && (
-                      <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem' }}>
-                        <strong>Descartes:</strong>
-                        <pre style={{ margin: 0, color: '#d32f2f' }}>{JSON.stringify(logs.discards, null, 2)}</pre>
-                      </div>
-                  )}
-
-                  {logs.warnings && logs.warnings.length > 0 && (
-                      <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem', color: '#f57c00' }}>
-                          <strong>Avisos ({logs.warnings.length}):</strong>
-                          <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
-                              {logs.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
-                              {logs.warnings.length > 5 && <li>...e mais {logs.warnings.length - 5}</li>}
-                          </ul>
-                      </div>
-                  )}
-
-                  {logs.errors && logs.errors.length > 0 && (
-                      <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem', color: 'red' }}>
-                          <strong>Erros:</strong>
-                          <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
-                              {logs.errors.map((e, i) => <li key={i}>{e}</li>)}
-                          </ul>
-                      </div>
-                  )}
-              </div>
-          )}
+          <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', maxHeight: '500px', overflowY: 'auto' }}>
+              {logs.length === 0 ? (
+                  <p style={{ color: '#777', margin: 0 }}>Nenhum log disponível.</p>
+              ) : (
+                  <pre style={{
+                      whiteSpace: 'pre-wrap',
+                      fontSize: '0.85rem',
+                      fontFamily: 'monospace',
+                      margin: 0,
+                      color: '#333'
+                  }}>
+                      {logs.join('\n')}
+                  </pre>
+              )}
+          </div>
       </div>
     </div>
   );

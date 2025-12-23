@@ -1,15 +1,12 @@
 
-import { NextResponse } from 'next/server';
-import { getLastLog } from '@/lib/exporter';
+import { NextResponse } from "next/server";
+import { getLogs } from "@/lib/export/exportLogger";
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const log = getLastLog();
-
-  if (!log) {
-    return NextResponse.json({ message: 'Nenhum log de exportação disponível.' }, { status: 404 });
-  }
-
-  return NextResponse.json(log);
+  return NextResponse.json({
+    lines: getLogs(),
+    lastUpdatedAt: new Date().toISOString(),
+  });
 }
