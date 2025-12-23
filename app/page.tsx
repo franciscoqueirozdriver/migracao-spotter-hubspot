@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
 
@@ -8,10 +8,31 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeExport, setActiveExport] = useState<ExportableEntity | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Log state: simple array of strings
   const [logs, setLogs] = useState<string[]>([]);
-  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+
+  // Poll for logs if we have a runId
+  useEffect(() => {
+      let interval: NodeJS.Timeout;
+      if (currentRunId) {
+          // Initial fetch
+          fetchLogs(currentRunId);
+          interval = setInterval(() => fetchLogs(currentRunId), 2000);
+      }
+      return () => clearInterval(interval);
+  }, [currentRunId]);
+
+  const fetchLogs = async (runId: string) => {
+      try {
+          const res = await fetch(`/api/export/logs?runId=${runId}`);
+          if (res.ok) {
+              const data = await res.json();
+              setLogs(data.lines || []);
+          }
+      } catch (e) {
+          console.error('Log fetch error:', e);
+      }
+  };
 
   const startExport = async (entity: ExportableEntity) => {
     if (isLoading) return;
@@ -19,14 +40,17 @@ export default function HomePage() {
     setIsLoading(true);
     setActiveExport(entity);
     setError(null);
-    setLogs([]); // Clear local logs on new start
-
-    // Initial check
-    fetchLogs();
+    setLogs([]);
+    setCurrentRunId(null);
 
     try {
-      const apiUrl = `/api/export?mode=total&entity=${entity}`;
-      const response = await fetch(apiUrl);
+      const response = await fetch(`/api/export?mode=total&entity=${entity}`);
+
+      // Get Run ID immediately to start logging even if download takes time
+      const runId = response.headers.get('X-Export-Run-Id');
+      if (runId) {
+          setCurrentRunId(runId);
+      }
 
       if (!response.ok) {
         let errorMsg = `Erro ${response.status}`;
@@ -54,39 +78,21 @@ export default function HomePage() {
       a.remove();
       window.URL.revokeObjectURL(url);
 
-      // Final log refresh
-      fetchLogs();
-
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
-      fetchLogs(); // Fetch logs even on error to see what happened
+      const msg = err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.';
+      setError(msg);
+      // If we have a runId, the logs might contain the server-side error detail,
+      // but let's append client side error too if possible or just rely on state.
+      setLogs(prev => [...prev, `[CLIENT ERROR] ${msg}`]);
     } finally {
       setIsLoading(false);
       setActiveExport(null);
+      // Stop polling after a while? Or keep it?
+      // Requirement says: "Após o download disparar, a caixa de logs é preenchida automaticamente".
+      // We leave polling active for a bit or rely on user to see "Finished".
+      // Let's keep polling active as long as the component is mounted or until a new run starts.
+      // But we might want to stop interval eventually. For simplicity, we just keep currentRunId set.
     }
-  };
-
-  const fetchLogs = async () => {
-      setLoadingLogs(true);
-      try {
-          const res = await fetch('/api/export/logs', { cache: 'no-store' });
-          if (res.ok) {
-              const data = await res.json();
-              setLogs(data.lines ?? []);
-          }
-      } catch (e) {
-          console.error('Failed to fetch logs', e);
-      } finally {
-          setLoadingLogs(false);
-      }
-  };
-
-  const copyLogs = () => {
-      if (logs.length === 0) return;
-      const text = logs.join('\n');
-      navigator.clipboard.writeText(text).then(() => {
-          alert("Logs copiados!");
-      }).catch(console.error);
   };
 
   return (
@@ -130,17 +136,7 @@ export default function HomePage() {
       </div>
 
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h2 style={{ fontSize: '1.2rem', margin: 0 }}>2. Auditoria e Logs</h2>
-            <div style={{ display: 'flex', gap: '10px' }}>
-                <button onClick={fetchLogs} disabled={loadingLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
-                    {loadingLogs ? 'Atualizando...' : 'Atualizar Logs'}
-                </button>
-                <button onClick={copyLogs} style={{ padding: '8px 16px', cursor: 'pointer' }}>
-                    Copiar
-                </button>
-            </div>
-          </div>
+          <h2 style={{ fontSize: '1.2rem', margin: '0 0 1rem 0' }}>2. Auditoria e Logs</h2>
 
           <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', maxHeight: '500px', overflowY: 'auto' }}>
               {logs.length === 0 ? (

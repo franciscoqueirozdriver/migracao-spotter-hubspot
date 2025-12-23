@@ -2,14 +2,12 @@
 import { generateCompaniesCsvStrict } from './exporters/companies';
 import { generateContactsCsvStrict } from './exporters/contacts';
 import { generateDealsItemsCsvStrict } from './exporters/deals';
-import { appendLog, clearLogs } from './export/exportLogger';
+import { appendLog } from './export/logStore';
 
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
 export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads';
 
-// Kept for backward compatibility with exporters if they use it,
-// but main logging is now via exportLogger
 export interface ExportLog {
   startedAt: string;
   finishedAt?: string;
@@ -22,6 +20,7 @@ export interface ExportLog {
     lostFetched?: number;
     dealsGenerated?: number;
     lineItemsGenerated?: number;
+    // Generic counters for other entities
     recordsFetched?: number;
     recordsGenerated?: number;
   };
@@ -39,14 +38,14 @@ export async function exportDataForMode(
   mode: ExportMode,
   entity: ExportableEntity,
   token: string,
-  baseUrl: string
+  baseUrl: string,
+  runId: string
 ): Promise<{ csvContent: string, logContent: string, fileName: string }> {
 
-  // Clear previous logs for a fresh start
-  clearLogs();
-  appendLog(`--- Nova Execução: ${entity} [${mode}] ---`);
+  appendLog(runId, `--- Nova Execução: ${entity} [${mode}] (RunID: ${runId}) ---`);
 
-  // Legacy object to satisfy exporter signatures, but primary log is the buffer
+  // Internal log object for logic compatibility (passed to exporters)
+  // We sync it with the global store
   const currentLog: ExportLog = {
     startedAt: new Date().toISOString(),
     entity,
@@ -60,8 +59,8 @@ export async function exportDataForMode(
   };
 
   const log: LogCallback = (message) => {
-    appendLog(message);
-    // Also keep legacy struct synced if needed for debugging, though UI now uses API
+    appendLog(runId, message);
+    // Keep local structure for consistency if needed by other parts
     if (message.includes('WARNING') || message.includes('WARN_')) currentLog.warnings.push(message);
     if (message.includes('ERROR') || message.includes('FATAL')) currentLog.errors.push(message);
   };
@@ -96,7 +95,7 @@ export async function exportDataForMode(
       throw err;
   }
 
-  // Return empty logContent string as UI now fetches from API
+  // Return empty string for legacy logContent as it is now handled via runId/API
   return { csvContent, logContent: '', fileName };
 }
 //endregion

@@ -27,7 +27,7 @@ interface SpotterLead {
     id: number;
     organizationId?: number | null;
     stage?: string | { name?: string } | null;
-    source?: string | null;
+    source?: { id?: number; value?: string } | null; // UPDATED
     lead?: string | null;
     pipeline?: string | null;
 }
@@ -36,14 +36,14 @@ interface SpotterLost {
     leadId: number;
     date: string;
     reason?: string;
-    stage?: string; // Adding based on requirement "stage do Lost"
+    stage?: string;
 }
 
 interface SpotterPerson {
     id: number;
     leadId?: number | null;
     mainContact?: boolean | null;
-    name?: string; // Added to support person name resolution
+    name?: string;
 }
 
 interface SpotterOrg {
@@ -57,7 +57,7 @@ interface RecommendedProduct {
     quantity: number;
     labelValue?: number;
     amount?: number;
-    descountType?: string; // Correcting likely typo 'descount' to 'discount' usage but API says 'descountType'
+    descountType?: string;
     descountValue?: number;
 }
 
@@ -88,8 +88,10 @@ function formatDateBR(isoString?: string): string {
     }
 }
 
+// STRICT: No hardcoded fallback
 function mapOrigemComercialReal(sourceValue?: string): string {
-    if (!sourceValue) return 'Inbound';
+    if (!sourceValue) return ''; // STRICT: Empty if missing
+
     const normalized = toLowerText(sourceValue).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
     if (normalized.includes('prospeccao ativa') || normalized.includes('outbound')) return 'Outbound';
@@ -97,7 +99,14 @@ function mapOrigemComercialReal(sourceValue?: string): string {
     if (normalized.includes('indicacao') || normalized.includes('programa')) return 'Base Viral (Programa de Indicação)';
     if (normalized.includes('parceiros') || normalized.includes('partner')) return 'Parceiros';
 
-    return 'Inbound';
+    // If none match, return original value or empty?
+    // Requirement implies "derivado exclusivamente de Leads".
+    // If we can't map it, we return the value itself or 'Inbound' only if it matches 'inbound' logic?
+    // User said: "Remover qualquer fallback genérico 'Inbound'".
+    // Let's return the raw value if no map match found, or strictly what it is.
+    if (normalized.includes('inbound')) return 'Inbound';
+
+    return sourceValue; // Return raw if no specific map
 }
 
 function normalizeDiscountType(type?: string): string {
@@ -131,6 +140,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Leads (Base)...');
     const allLeads = await paginateOData<SpotterLead>(baseUrl, '/v3/Leads', token, log);
     currentLog.totals.leadsFetched = allLeads.length;
+    // Map leads by ID for easy lookup if needed, but we iterate allLeads anyway
+    const leadsById = new Map(allLeads.map(l => [String(l.id), l]));
     log(`Fetched ${allLeads.length} leads.`);
 
     // 2. Fetch Sold (ENRIQUECIMENTO)
@@ -262,7 +273,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
         if (soldData) {
             // Case 1: Sold
-            stage = 'Vendido'; // STRICT REQUIREMENT: Constant "Vendido"
+            stage = 'Vendido';
 
             saleId = String(soldData.id);
             saleDate = formatDateBR(soldData.saleDate);
@@ -273,7 +284,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             preSalesEmail = soldData.preSales?.email ?? '';
 
             itemsToExport = (soldData.products ?? []).map(p => {
-                // Name resolution: check catalog first using ID
                 let name = '';
                 const catalogDesc = productsById.get(String(p.id))?.description; // STRING KEY
                 if (catalogDesc) {
@@ -302,7 +312,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
         } else if (lostData) {
             // Case 2: Lost
-            stage = 'Perdido'; // STRICT REQUIREMENT: Constant "Perdido"
+            stage = 'Perdido';
 
             saleDate = formatDateBR(lostData.date);
             itemsToExport = [];
@@ -319,13 +329,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
-                // STRICT: Use labelValue. Log if 0.
                 const price = p.labelValue ?? 0;
                 if (price === 0) {
                      log(`WARN_UNIT_PRICE_ZERO: Recommended Product ${p.productId} for Lead ${lead.id} has labelValue 0.`);
                 }
 
-                // Name resolution
                 let name = '';
                 const catalogDesc = productsById.get(String(p.productId))?.description; // STRING KEY
                 if (catalogDesc) {
@@ -351,7 +359,15 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             itemsFromRecommended += itemsToExport.length;
         }
 
-        const origem = mapOrigemComercialReal(lead.source ?? undefined);
+        // SOURCE MAPPING
+        // Lookup always from Lead object (leadsById logic implicit as we loop allLeads)
+        // Check integrity: if sold/lost exist but source is missing in lead
+        const rawSourceValue = lead.source?.value;
+        const origem = mapOrigemComercialReal(rawSourceValue);
+
+        if (!origem) {
+             log(`WARN_MISSING_SOURCE: Lead ${lead.id} has no source value.`);
+        }
 
         if (!personId) leadsWithoutPerson++;
         if (!orgId) leadsWithoutOrg++;
@@ -373,7 +389,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         // GENERATE ROWS
         if (itemsToExport.length > 0) {
             for (const item of itemsToExport) {
-                // Deal Name Logic: "<2 words> | <Item Name>"
                 const dealName = `${firstTwo} | ${item.name}`;
 
                 rows.push([
@@ -402,7 +417,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 lineItemsGenerated++;
             }
         } else {
-            // 1 row, empty items. Fallback dealname?
             const dealName = baseName;
 
             rows.push([
