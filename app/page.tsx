@@ -26,6 +26,7 @@ interface ExportLog {
   };
   warnings: string[];
   errors: string[];
+  lines?: string[]; // Added lines property
 }
 
 export default function HomePage() {
@@ -43,6 +44,9 @@ export default function HomePage() {
     setIsLoading(true);
     setActiveExport(entity);
     setError(null);
+
+    // Refresh logs once before starting to clear previous state if needed
+    fetchLogs();
 
     try {
       const apiUrl = `/api/export?mode=total&entity=${entity}`;
@@ -172,7 +176,7 @@ export default function HomePage() {
           {!logs ? (
               <p style={{ color: '#777' }}>Nenhum log disponível. Execute uma exportação para gerar logs.</p>
           ) : (
-              <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', fontSize: '0.9rem', overflowX: 'auto', maxHeight: '500px' }}>
+              <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', fontSize: '0.9rem', overflowX: 'auto', maxHeight: '600px' }}>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Entidade:</strong> {logs.entity}</div>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Início:</strong> {new Date(logs.startedAt).toLocaleString()}</div>
                   <div style={{ marginBottom: '0.5rem' }}><strong>Fim:</strong> {logs.finishedAt ? new Date(logs.finishedAt).toLocaleString() : 'Em andamento...'}</div>
@@ -181,6 +185,25 @@ export default function HomePage() {
                       <strong>Totais:</strong>
                       <pre style={{ margin: 0 }}>{JSON.stringify(logs.totals, null, 2)}</pre>
                   </div>
+
+                  {logs.lines && logs.lines.length > 0 && (
+                      <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem' }}>
+                          <strong>Detalhes do Log:</strong>
+                          <pre style={{
+                              backgroundColor: '#eaeaea',
+                              padding: '10px',
+                              borderRadius: '4px',
+                              maxHeight: '300px',
+                              overflowY: 'auto',
+                              whiteSpace: 'pre-wrap',
+                              fontSize: '0.8rem',
+                              color: '#333',
+                              fontFamily: 'monospace'
+                          }}>
+                              {logs.lines.join('\n')}
+                          </pre>
+                      </div>
+                  )}
 
                   {logs.discards && Object.keys(logs.discards).length > 0 && (
                       <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem' }}>
@@ -193,7 +216,8 @@ export default function HomePage() {
                       <div style={{ marginTop: '1rem', borderTop: '1px solid #ddd', paddingTop: '0.5rem', color: '#f57c00' }}>
                           <strong>Avisos ({logs.warnings.length}):</strong>
                           <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
-                              {logs.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                              {logs.warnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
+                              {logs.warnings.length > 5 && <li>...e mais {logs.warnings.length - 5}</li>}
                           </ul>
                       </div>
                   )}

@@ -31,6 +31,7 @@ export interface ExportLog {
   };
   warnings: string[];
   errors: string[];
+  lines: string[]; // Full text log buffer
 }
 
 // Global variable to store the last log (in-memory)
@@ -81,7 +82,8 @@ export async function exportDataForMode(
     totals: {},
     discards: {},
     warnings: [],
-    errors: []
+    errors: [],
+    lines: []
   };
 
   // Helper to append messages to warnings/errors and also keep a string buffer for legacy reasons if needed
@@ -89,6 +91,7 @@ export async function exportDataForMode(
   const log: LogCallback = (message) => {
     const msg = `[${new Date().toISOString()}] ${message}`;
     logMessages.push(msg);
+    currentLog.lines.push(msg); // Add to persistent log lines
     console.log(msg); // Ensure it logs to backend console
 
     // Improved heuristic to classify warnings/errors

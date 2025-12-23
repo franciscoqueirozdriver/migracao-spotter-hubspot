@@ -137,14 +137,14 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching LeadsSold...');
     const leadsSold = await paginateOData<SpotterLeadSold>(baseUrl, '/v3/LeadsSold', token, log);
     currentLog.totals.soldFetched = leadsSold.length;
-    const soldMap = new Map(leadsSold.map(s => [s.leadId, s]));
+    const soldMap = new Map(leadsSold.map(s => [String(s.leadId), s])); // STRING KEY
     log(`Fetched ${leadsSold.length} sold leads.`);
 
     // 3. Fetch Losts (ENRIQUECIMENTO)
     log('Fetching Losts...');
     const losts = await paginateOData<SpotterLost>(baseUrl, '/v3/Losts', token, log);
     currentLog.totals.lostFetched = losts.length;
-    const lostMap = new Map(losts.map(l => [l.leadId, l]));
+    const lostMap = new Map(losts.map(l => [String(l.leadId), l])); // STRING KEY
     log(`Fetched ${losts.length} lost leads.`);
 
     // 4. Fetch Recommended Products (ENRIQUECIMENTO - Abertos)
@@ -152,11 +152,12 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     const recommended = await paginateOData<RecommendedProduct>(baseUrl, '/v3/recommendedProducts', token, log);
     (currentLog.totals as any).recommendedFetched = recommended.length;
 
-    const recommendedMap = new Map<number, RecommendedProduct[]>();
+    const recommendedMap = new Map<string, RecommendedProduct[]>(); // STRING KEY
     for (const rp of recommended) {
-        const list = recommendedMap.get(rp.leadId) ?? [];
+        const key = String(rp.leadId);
+        const list = recommendedMap.get(key) ?? [];
         list.push(rp);
-        recommendedMap.set(rp.leadId, list);
+        recommendedMap.set(key, list);
     }
     log(`Fetched ${recommended.length} recommended products.`);
 
@@ -164,22 +165,23 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Product Catalog...');
     const products = await paginateOData<SpotterProduct>(baseUrl, '/v3/products', token, log);
     (currentLog.totals as any).productsCatalogFetched = products.length;
-    const productsById = new Map(products.map(p => [p.id, p]));
+    const productsById = new Map(products.map(p => [String(p.id), p])); // STRING KEY
     log(`Fetched ${products.length} catalog products.`);
 
     // 5. Fetch Persons (ENRIQUECIMENTO)
     log('Fetching Persons...');
     const allPersons = await paginateOData<SpotterPerson>(baseUrl, '/v3/Persons', token, log);
 
-    const personsByLead = new Map<number, SpotterPerson[]>();
+    const personsByLead = new Map<string, SpotterPerson[]>(); // STRING KEY
     for (const p of allPersons) {
         if (p.leadId) {
-            const list = personsByLead.get(p.leadId) ?? [];
+            const key = String(p.leadId);
+            const list = personsByLead.get(key) ?? [];
             list.push(p);
-            personsByLead.set(p.leadId, list);
+            personsByLead.set(key, list);
         }
     }
-    const mainPersonIdByLeadId = new Map<number, number>();
+    const mainPersonIdByLeadId = new Map<string, number>(); // STRING KEY
     for (const [leadId, persons] of Array.from(personsByLead.entries())) {
         const main = persons.find(p => p.mainContact) ?? persons[0];
         if (main) mainPersonIdByLeadId.set(leadId, main.id);
@@ -188,7 +190,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     // NEW: Fetch Organizations to get Company Name
     log('Fetching Organizations...');
     const allOrgs = await paginateOData<SpotterOrg>(baseUrl, '/v3/organization', token, log);
-    const orgsById = new Map(allOrgs.map(o => [o.id, o]));
+    const orgsById = new Map(allOrgs.map(o => [String(o.id), o])); // STRING KEY
     log(`Fetched ${allOrgs.length} organizations.`);
 
     // Headers
@@ -207,7 +209,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         'origem_comercial_real',
         'spotter_organization_id',
         'spotter_person_id',
-        'Produto', // Renamed from 'Nome'
+        'Produto',
         'Quantidade',
         'Preço unitário',
         'spotter_product_id',
@@ -226,13 +228,14 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     let itemNameFallbackCount = 0;
 
     for (const lead of allLeads) {
-        const soldData = soldMap.get(lead.id);
-        const lostData = lostMap.get(lead.id);
-        const recommendedData = recommendedMap.get(lead.id) ?? [];
-        const personId = mainPersonIdByLeadId.get(lead.id);
-        const orgId = lead.organizationId;
+        const leadIdStr = String(lead.id); // STRICT STRING KEY
+        const soldData = soldMap.get(leadIdStr);
+        const lostData = lostMap.get(leadIdStr);
+        const recommendedData = recommendedMap.get(leadIdStr) ?? [];
+        const personId = mainPersonIdByLeadId.get(leadIdStr);
+        const orgId = lead.organizationId ? String(lead.organizationId) : undefined;
         const org = orgId ? orgsById.get(orgId) : undefined;
-        const mainPerson = personId ? personsByLead.get(lead.id)?.find(p => p.id === personId) : undefined;
+        const mainPerson = personId ? personsByLead.get(leadIdStr)?.find(p => p.id === personId) : undefined;
 
         let stage = '';
         let saleId = '';
@@ -259,10 +262,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
         if (soldData) {
             // Case 1: Sold
-            stage = soldData.saleStage ?? '';
-            if (!stage) {
-                log(`WARNING: Sold Lead ${lead.id} has no saleStage. Using empty string.`);
-            }
+            stage = 'Vendido'; // STRICT REQUIREMENT: Constant "Vendido"
 
             saleId = String(soldData.id);
             saleDate = formatDateBR(soldData.saleDate);
@@ -275,7 +275,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             itemsToExport = (soldData.products ?? []).map(p => {
                 // Name resolution: check catalog first using ID
                 let name = '';
-                const catalogDesc = productsById.get(p.id)?.description;
+                const catalogDesc = productsById.get(String(p.id))?.description; // STRING KEY
                 if (catalogDesc) {
                     name = catalogDesc;
                 } else {
@@ -302,10 +302,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
         } else if (lostData) {
             // Case 2: Lost
-            stage = lostData.stage ?? '';
-            if (!stage) {
-                log(`WARNING: Lost Lead ${lead.id} has no stage. Using empty string.`);
-            }
+            stage = 'Perdido'; // STRICT REQUIREMENT: Constant "Perdido"
 
             saleDate = formatDateBR(lostData.date);
             itemsToExport = [];
@@ -330,7 +327,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
                 // Name resolution
                 let name = '';
-                const catalogDesc = productsById.get(p.productId)?.description;
+                const catalogDesc = productsById.get(String(p.productId))?.description; // STRING KEY
                 if (catalogDesc) {
                     name = catalogDesc;
                 } else {
