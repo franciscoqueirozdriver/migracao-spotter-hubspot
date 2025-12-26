@@ -2,14 +2,14 @@
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
 import { LogCallback, ExportLog } from '../exporter';
-import { toMoney2 } from '../formatters/money';
+import { formatMoneyBRLForCSV } from '../formatters/money';
 
 interface SpotterLeadSold {
     leadId: number;
     saleDate: string;
     saleStage?: string;
     cycle?: number;
-    totalDealValue?: number | string; // Updated to accept string input
+    totalDealValue?: number | string;
     id: number;
     products?: {
       id: number;
@@ -151,6 +151,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Leads (Base)...');
     const allLeads = await paginateOData<SpotterLead>(baseUrl, '/v3/Leads', token, log);
     currentLog.totals.leadsFetched = allLeads.length;
+    // Map leads by ID for easy lookup if needed, but we iterate allLeads anyway
     const leadsById = new Map(allLeads.map(l => [String(l.id), l]));
     log(`Fetched ${allLeads.length} leads.`);
 
@@ -296,8 +297,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleStage = soldData.saleStage ?? '';
             cycle = String(soldData.cycle ?? '');
 
-            // Format Total Deal Value
-            totalValue = toMoney2(soldData.totalDealValue);
+            // Format Total Deal Value with new formatter
+            totalValue = formatMoneyBRLForCSV(soldData.totalDealValue);
 
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
@@ -320,11 +321,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: p.quantity ?? 1,
-                    price: toMoney2(p.individualValue),
+                    price: formatMoneyBRLForCSV(p.individualValue),
                     id: String(p.id),
-                    discAmt: toMoney2(p.discountAmount),
+                    discAmt: formatMoneyBRLForCSV(p.discountAmount),
                     discType: normalizeDiscountType(p.discountType),
-                    finalVal: toMoney2(p.finalValue),
+                    finalVal: formatMoneyBRLForCSV(p.finalValue),
                     productIdForNameRes: p.id
                 };
             });
@@ -354,8 +355,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
 
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
-                // STRICT: Use labelValue. Log if 0.
                 let rawPrice = p.labelValue ?? 0;
+
+                // Keep raw price check for log logic before string formatting
                 if (rawPrice === 0 || rawPrice === '0') {
                      log(`WARN_UNIT_PRICE_ZERO: Recommended Product ${p.productId} for Lead ${lead.id} has labelValue 0.`);
                 }
@@ -373,11 +375,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: qty,
-                    price: toMoney2(rawPrice),
+                    price: formatMoneyBRLForCSV(rawPrice),
                     id: String(p.productId),
-                    discAmt: toMoney2(p.descountValue),
+                    discAmt: formatMoneyBRLForCSV(p.descountValue),
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: toMoney2(p.amount),
+                    finalVal: formatMoneyBRLForCSV(p.amount),
                     productIdForNameRes: p.productId
                 };
             });
@@ -431,11 +433,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     String(personId ?? ''),
                     item.name,
                     String(item.qty),
-                    item.price, // Already formatted
+                    item.price,
                     item.id,
-                    item.discAmt, // Already formatted
+                    item.discAmt,
                     item.discType,
-                    item.finalVal, // Already formatted
+                    item.finalVal,
                     createdAt,
                     closedAt
                 ]);
