@@ -293,7 +293,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             stage = 'Vendido';
 
             saleId = String(soldData.id);
-            saleDate = formatDateBR(soldData.saleDate);
+            saleDate = formatDateISO(soldData.saleDate); // CORRECTED TO ISO
             saleStage = soldData.saleStage ?? '';
             cycle = String(soldData.cycle ?? '');
 
@@ -336,7 +336,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             // Case 2: Lost
             stage = 'Perdido';
 
-            saleDate = formatDateBR(lostData.date);
+            saleDate = formatDateISO(lostData.date); // CORRECTED TO ISO
             itemsToExport = [];
 
             closedAt = formatDateISO(lostData.date);
@@ -425,7 +425,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     saleDate,
                     saleStage,
                     cycle,
-                    totalValue, // Already formatted (PT-BR)
+                    totalValue,
                     salesRepEmail,
                     preSalesEmail,
                     origem,
@@ -433,11 +433,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     String(personId ?? ''),
                     item.name,
                     String(item.qty),
-                    item.price, // Already formatted
+                    item.price,
                     item.id,
-                    item.discAmt, // Already formatted
+                    item.discAmt,
                     item.discType,
-                    item.finalVal, // Already formatted
+                    item.finalVal,
                     createdAt,
                     closedAt
                 ]);
@@ -455,7 +455,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 saleDate,
                 saleStage,
                 cycle,
-                totalValue, // Already formatted
+                totalValue,
                 salesRepEmail,
                 preSalesEmail,
                 origem,
