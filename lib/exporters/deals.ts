@@ -27,9 +27,12 @@ interface SpotterLead {
     id: number;
     organizationId?: number | null;
     stage?: string | { name?: string } | null;
-    source?: { id?: number; value?: string } | null; // UPDATED
+    source?: { id?: number; value?: string } | null;
     lead?: string | null;
     pipeline?: string | null;
+    registerDate?: string; // Standard name often used
+    registrationDate?: string; // Variant
+    createDate?: string; // Variant
 }
 
 interface SpotterLost {
@@ -88,25 +91,29 @@ function formatDateBR(isoString?: string): string {
     }
 }
 
-// STRICT: No hardcoded fallback
-function mapOrigemComercialReal(sourceValue?: string): string {
-    if (!sourceValue) return ''; // STRICT: Empty if missing
+// STRICT: ISO 8601 (YYYY-MM-DD) preferred
+function formatDateISO(isoString?: string): string {
+    if (!isoString) return '';
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return '';
+      return date.toISOString().split('T')[0];
+    } catch {
+      return '';
+    }
+}
 
+function mapOrigemComercialReal(sourceValue?: string): string {
+    if (!sourceValue) return '';
     const normalized = toLowerText(sourceValue).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
     if (normalized.includes('prospeccao ativa') || normalized.includes('outbound')) return 'Outbound';
     if (normalized.includes('carteira de clientes') || normalized.includes('base') || normalized.includes('white space')) return 'White Space (Base)';
     if (normalized.includes('indicacao') || normalized.includes('programa')) return 'Base Viral (Programa de Indicação)';
     if (normalized.includes('parceiros') || normalized.includes('partner')) return 'Parceiros';
-
-    // If none match, return original value or empty?
-    // Requirement implies "derivado exclusivamente de Leads".
-    // If we can't map it, we return the value itself or 'Inbound' only if it matches 'inbound' logic?
-    // User said: "Remover qualquer fallback genérico 'Inbound'".
-    // Let's return the raw value if no map match found, or strictly what it is.
     if (normalized.includes('inbound')) return 'Inbound';
 
-    return sourceValue; // Return raw if no specific map
+    return sourceValue;
 }
 
 function normalizeDiscountType(type?: string): string {
@@ -131,6 +138,12 @@ function getFirstTwoWords(name?: string | null): string {
     if (!name) return '';
     const parts = name.trim().split(/\s+/);
     return parts.slice(0, 2).join(' ');
+}
+
+// Helper to find creation date
+function getLeadCreationDate(lead: SpotterLead): string {
+    // Try common variants based on user prompt
+    return lead.registerDate ?? lead.registrationDate ?? lead.createDate ?? '';
 }
 
 export async function generateDealsItemsCsvStrict(token: string, baseUrl: string, log: LogCallback, currentLog: ExportLog): Promise<string> {
@@ -226,7 +239,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         'spotter_product_id',
         'spotter_discount_amount',
         'spotter_discount_type',
-        'spotter_final_value'
+        'spotter_final_value',
+        'Data da Criação do Negócio', // NEW
+        'Data de Fechamento do Negócio' // NEW
     ];
 
     const rows: string[][] = [];
@@ -257,6 +272,10 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         let salesRepEmail = '';
         let preSalesEmail = '';
 
+        // Date Logic
+        const createdAt = formatDateISO(getLeadCreationDate(lead));
+        let closedAt = '';
+
         interface LineItem {
             name: string;
             qty: number;
@@ -282,6 +301,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             totalValue = String(soldData.totalDealValue ?? 0);
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
+
+            // Closed Date from Sale Date
+            closedAt = formatDateISO(soldData.saleDate);
 
             itemsToExport = (soldData.products ?? []).map(p => {
                 let name = '';
@@ -317,6 +339,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleDate = formatDateBR(lostData.date);
             itemsToExport = [];
 
+            // Closed Date from Lost Date
+            closedAt = formatDateISO(lostData.date);
+
         } else {
             // Case 3: Open
             const extractedStage = getLeadStageName(lead);
@@ -327,8 +352,12 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 log(`WARNING: Open Lead ${lead.id} has no stage name. Using empty string.`);
             }
 
+            // Closed Date is empty for Open deals
+            closedAt = '';
+
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
+                // STRICT: Use labelValue. Log if 0.
                 const price = p.labelValue ?? 0;
                 if (price === 0) {
                      log(`WARN_UNIT_PRICE_ZERO: Recommended Product ${p.productId} for Lead ${lead.id} has labelValue 0.`);
@@ -360,8 +389,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         }
 
         // SOURCE MAPPING
-        // Lookup always from Lead object (leadsById logic implicit as we loop allLeads)
-        // Check integrity: if sold/lost exist but source is missing in lead
         const rawSourceValue = lead.source?.value;
         const origem = mapOrigemComercialReal(rawSourceValue);
 
@@ -412,7 +439,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     item.id,
                     String(item.discAmt),
                     item.discType,
-                    String(item.finalVal)
+                    String(item.finalVal),
+                    createdAt, // NEW
+                    closedAt   // NEW
                 ]);
                 lineItemsGenerated++;
             }
@@ -434,7 +463,9 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 origem,
                 String(orgId ?? ''),
                 String(personId ?? ''),
-                '', '', '', '', '', '', ''
+                '', '', '', '', '', '', '',
+                createdAt, // NEW
+                closedAt   // NEW
             ]);
         }
         dealsGenerated++;
