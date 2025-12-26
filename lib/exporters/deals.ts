@@ -2,7 +2,7 @@
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
 import { LogCallback, ExportLog } from '../exporter';
-import { formatMoneyForCsv } from '../formatters/money';
+import { formatMoneyBR } from '../formatters/money';
 
 interface SpotterLeadSold {
     leadId: number;
@@ -297,8 +297,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleStage = soldData.saleStage ?? '';
             cycle = String(soldData.cycle ?? '');
 
-            // Format Total Deal Value with new strict formatter
-            totalValue = formatMoneyForCsv(soldData.totalDealValue);
+            // Format Total Deal Value with new strict formatter (PT-BR)
+            totalValue = formatMoneyBR(soldData.totalDealValue);
 
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
@@ -321,11 +321,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: p.quantity ?? 1,
-                    price: formatMoneyForCsv(p.individualValue),
+                    price: formatMoneyBR(p.individualValue),
                     id: String(p.id),
-                    discAmt: formatMoneyForCsv(p.discountAmount),
+                    discAmt: formatMoneyBR(p.discountAmount),
                     discType: normalizeDiscountType(p.discountType),
-                    finalVal: formatMoneyForCsv(p.finalValue),
+                    finalVal: formatMoneyBR(p.finalValue),
                     productIdForNameRes: p.id
                 };
             });
@@ -375,11 +375,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: qty,
-                    price: formatMoneyForCsv(rawPrice),
+                    price: formatMoneyBR(rawPrice),
                     id: String(p.productId),
-                    discAmt: formatMoneyForCsv(p.descountValue),
+                    discAmt: formatMoneyBR(p.descountValue),
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: formatMoneyForCsv(p.amount),
+                    finalVal: formatMoneyBR(p.amount),
                     productIdForNameRes: p.productId
                 };
             });
@@ -425,7 +425,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     saleDate,
                     saleStage,
                     cycle,
-                    totalValue,
+                    totalValue, // Already formatted (PT-BR)
                     salesRepEmail,
                     preSalesEmail,
                     origem,
@@ -433,11 +433,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     String(personId ?? ''),
                     item.name,
                     String(item.qty),
-                    item.price,
+                    item.price, // Already formatted
                     item.id,
-                    item.discAmt,
+                    item.discAmt, // Already formatted
                     item.discType,
-                    item.finalVal,
+                    item.finalVal, // Already formatted
                     createdAt,
                     closedAt
                 ]);
@@ -455,7 +455,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 saleDate,
                 saleStage,
                 cycle,
-                totalValue,
+                totalValue, // Already formatted
                 salesRepEmail,
                 preSalesEmail,
                 origem,

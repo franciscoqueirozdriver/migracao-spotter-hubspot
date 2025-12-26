@@ -1,27 +1,33 @@
 
-export function formatMoneyForCsv(v: unknown): string {
-  if (v === null || v === undefined || v === "") return "0.00";
-
-  // Number vindo do Spotter: não inventar regra; só padronizar 2 casas
-  if (typeof v === "number" && Number.isFinite(v)) return v.toFixed(2);
-
-  // String: aceitar "58239.96" ou "58.239,96" e converter com segurança
-  if (typeof v === "string") {
-    let s = v.trim();
-
-    // Fix for the specific case where dot might be thousand separator and comma decimal
-    // If string has both, assume dot is thousand separator and remove it
-    if (s.includes(",") && s.includes(".")) {
-        s = s.replace(/\./g, "").replace(",", ".");
-    } else if (s.includes(",")) {
-        // If only comma, assume it's decimal
-        s = s.replace(",", ".");
-    }
-    // If only dot, assume it's already decimal (standard float string)
-
-    const n = Number(s);
-    return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+export function formatMoneyBR(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') {
+    return '0,00';
   }
 
-  return "0.00";
+  let num: number;
+
+  if (typeof value === 'number') {
+    num = value;
+  } else {
+    // If string, try to parse robustly.
+    // If it comes as "58239,96" (already PT-BR), convert to standard float first.
+    let s = value.trim();
+    if (s.includes(",") && s.includes(".")) {
+        // Assume dot thousand, comma decimal -> standard float
+        s = s.replace(/\./g, "").replace(",", ".");
+    } else if (s.includes(",")) {
+        // Assume comma decimal -> standard float
+        s = s.replace(",", ".");
+    }
+
+    num = Number(s);
+  }
+
+  if (!Number.isFinite(num)) {
+      return '0,00';
+  }
+
+  // Format to PT-BR: Comma decimal, NO thousand separator
+  // We can simulate this easily: toFixed(2) -> replace dot with comma
+  return num.toFixed(2).replace('.', ',');
 }
