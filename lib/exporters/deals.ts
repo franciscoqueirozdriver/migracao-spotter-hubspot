@@ -2,22 +2,23 @@
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
 import { LogCallback, ExportLog } from '../exporter';
+import { toMoney2 } from '../formatters/money';
 
 interface SpotterLeadSold {
     leadId: number;
     saleDate: string;
     saleStage?: string;
     cycle?: number;
-    totalDealValue?: number;
+    totalDealValue?: number | string; // Updated to accept string input
     id: number;
     products?: {
       id: number;
       name?: string;
       quantity?: number;
-      individualValue?: number;
-      discountAmount?: number;
+      individualValue?: number | string;
+      discountAmount?: number | string;
       discountType?: string;
-      finalValue?: number;
+      finalValue?: number | string;
     }[];
     salesRep?: { email?: string };
     preSales?: { email?: string };
@@ -30,9 +31,9 @@ interface SpotterLead {
     source?: { id?: number; value?: string } | null;
     lead?: string | null;
     pipeline?: string | null;
-    registerDate?: string; // Standard name often used
-    registrationDate?: string; // Variant
-    createDate?: string; // Variant
+    registerDate?: string;
+    registrationDate?: string;
+    createDate?: string;
 }
 
 interface SpotterLost {
@@ -58,10 +59,10 @@ interface RecommendedProduct {
     leadId: number;
     productId: number;
     quantity: number;
-    labelValue?: number;
-    amount?: number;
+    labelValue?: number | string;
+    amount?: number | string;
     descountType?: string;
-    descountValue?: number;
+    descountValue?: number | string;
 }
 
 interface SpotterProduct {
@@ -91,7 +92,6 @@ function formatDateBR(isoString?: string): string {
     }
 }
 
-// STRICT: ISO 8601 (YYYY-MM-DD) preferred
 function formatDateISO(isoString?: string): string {
     if (!isoString) return '';
     try {
@@ -140,9 +140,7 @@ function getFirstTwoWords(name?: string | null): string {
     return parts.slice(0, 2).join(' ');
 }
 
-// Helper to find creation date
 function getLeadCreationDate(lead: SpotterLead): string {
-    // Try common variants based on user prompt
     return lead.registerDate ?? lead.registrationDate ?? lead.createDate ?? '';
 }
 
@@ -153,7 +151,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Leads (Base)...');
     const allLeads = await paginateOData<SpotterLead>(baseUrl, '/v3/Leads', token, log);
     currentLog.totals.leadsFetched = allLeads.length;
-    // Map leads by ID for easy lookup if needed, but we iterate allLeads anyway
     const leadsById = new Map(allLeads.map(l => [String(l.id), l]));
     log(`Fetched ${allLeads.length} leads.`);
 
@@ -161,14 +158,14 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching LeadsSold...');
     const leadsSold = await paginateOData<SpotterLeadSold>(baseUrl, '/v3/LeadsSold', token, log);
     currentLog.totals.soldFetched = leadsSold.length;
-    const soldMap = new Map(leadsSold.map(s => [String(s.leadId), s])); // STRING KEY
+    const soldMap = new Map(leadsSold.map(s => [String(s.leadId), s]));
     log(`Fetched ${leadsSold.length} sold leads.`);
 
     // 3. Fetch Losts (ENRIQUECIMENTO)
     log('Fetching Losts...');
     const losts = await paginateOData<SpotterLost>(baseUrl, '/v3/Losts', token, log);
     currentLog.totals.lostFetched = losts.length;
-    const lostMap = new Map(losts.map(l => [String(l.leadId), l])); // STRING KEY
+    const lostMap = new Map(losts.map(l => [String(l.leadId), l]));
     log(`Fetched ${losts.length} lost leads.`);
 
     // 4. Fetch Recommended Products (ENRIQUECIMENTO - Abertos)
@@ -176,7 +173,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     const recommended = await paginateOData<RecommendedProduct>(baseUrl, '/v3/recommendedProducts', token, log);
     (currentLog.totals as any).recommendedFetched = recommended.length;
 
-    const recommendedMap = new Map<string, RecommendedProduct[]>(); // STRING KEY
+    const recommendedMap = new Map<string, RecommendedProduct[]>();
     for (const rp of recommended) {
         const key = String(rp.leadId);
         const list = recommendedMap.get(key) ?? [];
@@ -189,14 +186,14 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     log('Fetching Product Catalog...');
     const products = await paginateOData<SpotterProduct>(baseUrl, '/v3/products', token, log);
     (currentLog.totals as any).productsCatalogFetched = products.length;
-    const productsById = new Map(products.map(p => [String(p.id), p])); // STRING KEY
+    const productsById = new Map(products.map(p => [String(p.id), p]));
     log(`Fetched ${products.length} catalog products.`);
 
     // 5. Fetch Persons (ENRIQUECIMENTO)
     log('Fetching Persons...');
     const allPersons = await paginateOData<SpotterPerson>(baseUrl, '/v3/Persons', token, log);
 
-    const personsByLead = new Map<string, SpotterPerson[]>(); // STRING KEY
+    const personsByLead = new Map<string, SpotterPerson[]>();
     for (const p of allPersons) {
         if (p.leadId) {
             const key = String(p.leadId);
@@ -205,7 +202,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             personsByLead.set(key, list);
         }
     }
-    const mainPersonIdByLeadId = new Map<string, number>(); // STRING KEY
+    const mainPersonIdByLeadId = new Map<string, number>();
     for (const [leadId, persons] of Array.from(personsByLead.entries())) {
         const main = persons.find(p => p.mainContact) ?? persons[0];
         if (main) mainPersonIdByLeadId.set(leadId, main.id);
@@ -214,7 +211,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     // NEW: Fetch Organizations to get Company Name
     log('Fetching Organizations...');
     const allOrgs = await paginateOData<SpotterOrg>(baseUrl, '/v3/organization', token, log);
-    const orgsById = new Map(allOrgs.map(o => [String(o.id), o])); // STRING KEY
+    const orgsById = new Map(allOrgs.map(o => [String(o.id), o]));
     log(`Fetched ${allOrgs.length} organizations.`);
 
     // Headers
@@ -240,8 +237,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         'spotter_discount_amount',
         'spotter_discount_type',
         'spotter_final_value',
-        'Data da Criação do Negócio', // NEW
-        'Data de Fechamento do Negócio' // NEW
+        'Data da Criação do Negócio',
+        'Data de Fechamento do Negócio'
     ];
 
     const rows: string[][] = [];
@@ -254,7 +251,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
     let itemNameFallbackCount = 0;
 
     for (const lead of allLeads) {
-        const leadIdStr = String(lead.id); // STRICT STRING KEY
+        const leadIdStr = String(lead.id);
         const soldData = soldMap.get(leadIdStr);
         const lostData = lostMap.get(leadIdStr);
         const recommendedData = recommendedMap.get(leadIdStr) ?? [];
@@ -268,7 +265,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         let saleDate = '';
         let saleStage = '';
         let cycle = '';
-        let totalValue = '0';
+        let totalValue = '0'; // Processed below
         let salesRepEmail = '';
         let preSalesEmail = '';
 
@@ -279,11 +276,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         interface LineItem {
             name: string;
             qty: number;
-            price: number;
+            price: string; // Formatted
             id: string;
-            discAmt: number;
+            discAmt: string; // Formatted
             discType: string;
-            finalVal: number;
+            finalVal: string; // Formatted
             productIdForNameRes?: number;
         }
         let itemsToExport: LineItem[] = [];
@@ -298,16 +295,18 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleDate = formatDateBR(soldData.saleDate);
             saleStage = soldData.saleStage ?? '';
             cycle = String(soldData.cycle ?? '');
-            totalValue = String(soldData.totalDealValue ?? 0);
+
+            // Format Total Deal Value
+            totalValue = toMoney2(soldData.totalDealValue);
+
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
 
-            // Closed Date from Sale Date
             closedAt = formatDateISO(soldData.saleDate);
 
             itemsToExport = (soldData.products ?? []).map(p => {
                 let name = '';
-                const catalogDesc = productsById.get(String(p.id))?.description; // STRING KEY
+                const catalogDesc = productsById.get(String(p.id))?.description;
                 if (catalogDesc) {
                     name = catalogDesc;
                 } else {
@@ -321,11 +320,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: p.quantity ?? 1,
-                    price: p.individualValue ?? 0,
+                    price: toMoney2(p.individualValue),
                     id: String(p.id),
-                    discAmt: p.discountAmount ?? 0,
+                    discAmt: toMoney2(p.discountAmount),
                     discType: normalizeDiscountType(p.discountType),
-                    finalVal: p.finalValue ?? 0,
+                    finalVal: toMoney2(p.finalValue),
                     productIdForNameRes: p.id
                 };
             });
@@ -339,7 +338,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleDate = formatDateBR(lostData.date);
             itemsToExport = [];
 
-            // Closed Date from Lost Date
             closedAt = formatDateISO(lostData.date);
 
         } else {
@@ -352,19 +350,18 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 log(`WARNING: Open Lead ${lead.id} has no stage name. Using empty string.`);
             }
 
-            // Closed Date is empty for Open deals
             closedAt = '';
 
             itemsToExport = recommendedData.map(p => {
                 const qty = p.quantity ?? 1;
                 // STRICT: Use labelValue. Log if 0.
-                const price = p.labelValue ?? 0;
-                if (price === 0) {
+                let rawPrice = p.labelValue ?? 0;
+                if (rawPrice === 0 || rawPrice === '0') {
                      log(`WARN_UNIT_PRICE_ZERO: Recommended Product ${p.productId} for Lead ${lead.id} has labelValue 0.`);
                 }
 
                 let name = '';
-                const catalogDesc = productsById.get(String(p.productId))?.description; // STRING KEY
+                const catalogDesc = productsById.get(String(p.productId))?.description;
                 if (catalogDesc) {
                     name = catalogDesc;
                 } else {
@@ -376,11 +373,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: qty,
-                    price: price,
+                    price: toMoney2(rawPrice),
                     id: String(p.productId),
-                    discAmt: p.descountValue ?? 0,
+                    discAmt: toMoney2(p.descountValue),
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: p.amount ?? 0,
+                    finalVal: toMoney2(p.amount),
                     productIdForNameRes: p.productId
                 };
             });
@@ -388,7 +385,6 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             itemsFromRecommended += itemsToExport.length;
         }
 
-        // SOURCE MAPPING
         const rawSourceValue = lead.source?.value;
         const origem = mapOrigemComercialReal(rawSourceValue);
 
@@ -435,13 +431,13 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                     String(personId ?? ''),
                     item.name,
                     String(item.qty),
-                    String(item.price),
+                    item.price, // Already formatted
                     item.id,
-                    String(item.discAmt),
+                    item.discAmt, // Already formatted
                     item.discType,
-                    String(item.finalVal),
-                    createdAt, // NEW
-                    closedAt   // NEW
+                    item.finalVal, // Already formatted
+                    createdAt,
+                    closedAt
                 ]);
                 lineItemsGenerated++;
             }
@@ -464,8 +460,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 String(orgId ?? ''),
                 String(personId ?? ''),
                 '', '', '', '', '', '', '',
-                createdAt, // NEW
-                closedAt   // NEW
+                createdAt,
+                closedAt
             ]);
         }
         dealsGenerated++;
