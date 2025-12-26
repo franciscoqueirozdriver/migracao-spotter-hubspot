@@ -2,7 +2,7 @@
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
 import { LogCallback, ExportLog } from '../exporter';
-import { formatMoneyBRLForCSV } from '../formatters/money';
+import { formatMoneyForCsv } from '../formatters/money';
 
 interface SpotterLeadSold {
     leadId: number;
@@ -297,8 +297,8 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             saleStage = soldData.saleStage ?? '';
             cycle = String(soldData.cycle ?? '');
 
-            // Format Total Deal Value with new formatter
-            totalValue = formatMoneyBRLForCSV(soldData.totalDealValue);
+            // Format Total Deal Value with new strict formatter
+            totalValue = formatMoneyForCsv(soldData.totalDealValue);
 
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
@@ -321,11 +321,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: p.quantity ?? 1,
-                    price: formatMoneyBRLForCSV(p.individualValue),
+                    price: formatMoneyForCsv(p.individualValue),
                     id: String(p.id),
-                    discAmt: formatMoneyBRLForCSV(p.discountAmount),
+                    discAmt: formatMoneyForCsv(p.discountAmount),
                     discType: normalizeDiscountType(p.discountType),
-                    finalVal: formatMoneyBRLForCSV(p.finalValue),
+                    finalVal: formatMoneyForCsv(p.finalValue),
                     productIdForNameRes: p.id
                 };
             });
@@ -375,11 +375,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: qty,
-                    price: formatMoneyBRLForCSV(rawPrice),
+                    price: formatMoneyForCsv(rawPrice),
                     id: String(p.productId),
-                    discAmt: formatMoneyBRLForCSV(p.descountValue),
+                    discAmt: formatMoneyForCsv(p.descountValue),
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: formatMoneyBRLForCSV(p.amount),
+                    finalVal: formatMoneyForCsv(p.amount),
                     productIdForNameRes: p.productId
                 };
             });
