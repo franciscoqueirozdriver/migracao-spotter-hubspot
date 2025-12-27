@@ -266,7 +266,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
         let saleDate = '';
         let saleStage = '';
         let cycle = '';
-        let totalValue = '0'; // Processed below
+        let totalValue = '0,00'; // Default to PT-BR formatted zero
         let salesRepEmail = '';
         let preSalesEmail = '';
 
@@ -298,7 +298,7 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
             cycle = String(soldData.cycle ?? '');
 
             // Format Total Deal Value with new strict formatter (PT-BR)
-            totalValue = formatMoneyBR(soldData.totalDealValue);
+            totalValue = formatMoneyBR(soldData.totalDealValue); // FORCE PT-BR
 
             salesRepEmail = soldData.salesRep?.email ?? '';
             preSalesEmail = soldData.preSales?.email ?? '';
@@ -321,11 +321,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: p.quantity ?? 1,
-                    price: formatMoneyBR(p.individualValue),
+                    price: formatMoneyBR(p.individualValue), // FORCE PT-BR
                     id: String(p.id),
-                    discAmt: formatMoneyBR(p.discountAmount),
+                    discAmt: formatMoneyBR(p.discountAmount), // FORCE PT-BR
                     discType: normalizeDiscountType(p.discountType),
-                    finalVal: formatMoneyBR(p.finalValue),
+                    finalVal: formatMoneyBR(p.finalValue), // FORCE PT-BR
                     productIdForNameRes: p.id
                 };
             });
@@ -375,11 +375,11 @@ export async function generateDealsItemsCsvStrict(token: string, baseUrl: string
                 return {
                     name: name,
                     qty: qty,
-                    price: formatMoneyBR(rawPrice),
+                    price: formatMoneyBR(rawPrice), // FORCE PT-BR
                     id: String(p.productId),
-                    discAmt: formatMoneyBR(p.descountValue),
+                    discAmt: formatMoneyBR(p.descountValue), // FORCE PT-BR
                     discType: normalizeDiscountType(p.descountType),
-                    finalVal: formatMoneyBR(p.amount),
+                    finalVal: formatMoneyBR(p.amount), // FORCE PT-BR
                     productIdForNameRes: p.productId
                 };
             });
