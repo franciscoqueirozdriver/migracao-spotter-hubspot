@@ -2,11 +2,12 @@
 import { generateCompaniesCsvStrict } from './exporters/companies';
 import { generateContactsCsvStrict } from './exporters/contacts';
 import { generateDealsItemsCsvStrict } from './exporters/deals';
+import { generateLostsCsv } from './exporters/losts';
 import { appendLog } from './export/logStore';
 
 export type LogCallback = (message: string) => void;
 export type ExportMode = 'sold' | 'inProgress' | 'lost' | 'total';
-export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads';
+export type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'leads' | 'losts';
 
 export interface ExportLog {
   startedAt: string;
@@ -80,6 +81,9 @@ export async function exportDataForMode(
       } else if (entity === 'deals_line_items') {
           csvContent = await generateDealsItemsCsvStrict(token, baseUrl, log, currentLog);
           fileName = 'negocios_itens.csv';
+      } else if (entity === 'losts') {
+          csvContent = await generateLostsCsv(token, baseUrl, log, currentLog);
+          fileName = 'losts.csv';
       } else {
            throw new Error(`Entidade desconhecida ou não suportada: ${entity}`);
       }
