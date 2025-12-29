@@ -58,18 +58,49 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ message: 'Missing SPOTTER_TOKEN_EXACT' }, { status: 500 });
   }
 
+  // Safe URL construction
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  const normalizedPath = config.endpoint.replace(/^\//, '');
+  const finalUrl = `${normalizedBase}/${normalizedPath}`;
+
+  // 1. Pre-flight Check: Ensure Endpoint Exists
+  try {
+      // Use minimal query to check availability
+      const checkUrl = `${finalUrl}?$top=1`;
+      const res = await fetch(checkUrl, {
+          headers: {
+              'token_exact': token,
+              'Content-Type': 'application/json'
+          }
+      });
+
+      if (!res.ok) {
+          const text = await res.text();
+          console.error(`[backup-total] entity ${entityKey} failed check. URL: ${finalUrl} Status: ${res.status}`);
+          return NextResponse.json({
+              message: `Upstream Error: ${res.status} ${res.statusText}`,
+              details: text.slice(0, 300),
+              finalUrl
+          }, { status: res.status }); // Propagate status (e.g. 404, 401)
+      }
+  } catch (err) {
+      console.error(`[backup-total] entity ${entityKey} network error`, err);
+      return NextResponse.json({
+          message: 'Network error connecting to Spotter API',
+          error: err instanceof Error ? err.message : String(err),
+          finalUrl
+      }, { status: 502 });
+  }
+
+  // 2. Start Stream
   const passThrough = new PassThrough();
 
-  // Async process to drive the stream
   (async () => {
       try {
-          const fullUrl = `${baseUrl}${config.endpoint}`;
-          // console.log(`Starting export for ${entityKey} from ${fullUrl}`);
-
-          const generator = fetchODataPages(fullUrl, token);
+          // console.log(`Starting export stream for ${entityKey} from ${finalUrl}`);
+          const generator = fetchODataPages(finalUrl, token);
 
           let headers: string[] | null = null;
-          let isFirst = true;
 
           for await (const page of generator) {
               if (!page.items || page.items.length === 0) continue;
@@ -86,10 +117,11 @@ export async function GET(req: NextRequest) {
                   passThrough.write(row.join(',') + '\n');
               }
           }
-
       } catch (err) {
-          console.error(`Export failed for ${entityKey}:`, err);
-          passThrough.write(`\nERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+          console.error(`Export stream failed for ${entityKey}:`, err);
+          // If headers are already sent, we can't send JSON.
+          // We write a marker in the CSV to indicate partial failure.
+          passThrough.write(`\n\nERROR_DURING_STREAM: ${err instanceof Error ? err.message : String(err)}\n`);
       } finally {
           passThrough.end();
       }
