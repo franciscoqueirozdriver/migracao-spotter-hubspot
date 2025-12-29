@@ -6,7 +6,7 @@ type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'losts';
 
 export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
-  const [activeExport, setActiveExport] = useState<ExportableEntity | null>(null);
+  const [activeExport, setActiveExport] = useState<ExportableEntity | 'backup-total' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -69,6 +69,62 @@ export default function HomePage() {
           if (match && match[1]) fileName = match[1];
       }
 
+      downloadBlob(blob, fileName);
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.';
+      setError(msg);
+      setLogs(prev => [...prev, `[CLIENT ERROR] ${msg}`]);
+    } finally {
+      setIsLoading(false);
+      setActiveExport(null);
+    }
+  };
+
+  const startBackupTotal = async () => {
+    if (isLoading) return;
+
+    setIsLoading(true);
+    setActiveExport('backup-total');
+    setError(null);
+    // Logs for backup are inside the ZIP, no streaming logs for now
+    setLogs(['Iniciando Backup Total...', 'O processo pode levar vários minutos.', 'Aguarde o download do arquivo ZIP...']);
+    setCurrentRunId(null);
+
+    try {
+      const response = await fetch('/api/backup-total');
+
+      if (!response.ok) {
+         let errorMsg = `Erro ${response.status}`;
+         try {
+             const data = await response.json();
+             errorMsg = data.message || errorMsg;
+         } catch (e) { }
+         throw new Error(errorMsg);
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition');
+      let fileName = 'spotter-backup.zip';
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match && match[1]) fileName = match[1];
+      }
+
+      downloadBlob(blob, fileName);
+      setLogs(prev => [...prev, 'Download iniciado com sucesso!']);
+
+    } catch (err) {
+       const msg = err instanceof Error ? err.message : 'Ocorreu um erro desconhecido no backup.';
+       setError(msg);
+       setLogs(prev => [...prev, `[BACKUP ERROR] ${msg}`]);
+    } finally {
+        setIsLoading(false);
+        setActiveExport(null);
+    }
+  };
+
+  const downloadBlob = (blob: Blob, fileName: string) => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -77,22 +133,6 @@ export default function HomePage() {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.';
-      setError(msg);
-      // If we have a runId, the logs might contain the server-side error detail,
-      // but let's append client side error too if possible or just rely on state.
-      setLogs(prev => [...prev, `[CLIENT ERROR] ${msg}`]);
-    } finally {
-      setIsLoading(false);
-      setActiveExport(null);
-      // Stop polling after a while? Or keep it?
-      // Requirement says: "Após o download disparar, a caixa de logs é preenchida automaticamente".
-      // We leave polling active for a bit or rely on user to see "Finished".
-      // Let's keep polling active as long as the component is mounted or until a new run starts.
-      // But we might want to stop interval eventually. For simplicity, we just keep currentRunId set.
-    }
   };
 
   return (
@@ -135,15 +175,15 @@ export default function HomePage() {
             {activeExport === 'losts' ? 'Exportando...' : 'Baixar Descartados (Losts)'}
           </button>
         </div>
-        {isLoading && <p style={{ marginTop: '1rem', color: '#666' }}>Processando... Isso pode levar alguns minutos.</p>}
-        {error && (
+        {isLoading && activeExport !== 'backup-total' && <p style={{ marginTop: '1rem', color: '#666' }}>Processando... Isso pode levar alguns minutos.</p>}
+        {error && activeExport !== 'backup-total' && (
             <div style={{ color: 'red', marginTop: '1rem', border: '1px solid red', padding: '1rem', borderRadius: '5px', backgroundColor: '#ffebee' }}>
             <strong>Erro:</strong> {error}
             </div>
         )}
       </div>
 
-      <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff' }}>
+      <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff', marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.2rem', margin: '0 0 1rem 0' }}>2. Auditoria e Logs</h2>
 
           <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', maxHeight: '500px', overflowY: 'auto' }}>
@@ -161,6 +201,28 @@ export default function HomePage() {
                   </pre>
               )}
           </div>
+      </div>
+
+      <div style={{ border: '1px solid #333', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#eef', marginTop: '2rem' }}>
+          <h2 style={{ fontSize: '1.2rem', marginBottom: '0.5rem', color: '#333' }}>Admin / Avançado</h2>
+          <p style={{ marginBottom: '1rem', fontSize: '0.9rem', color: '#555' }}>
+              Funcionalidades de uso restrito. Gera um arquivo ZIP contendo todos os dados disponíveis na API (paginação completa).
+          </p>
+
+          <button
+            onClick={startBackupTotal}
+            disabled={isLoading}
+            style={{ ...buttonStyle(isLoading && activeExport !== 'backup-total'), backgroundColor: '#333', border: '1px solid #000' }}
+          >
+            {activeExport === 'backup-total' ? 'Gerando Backup (Aguarde)...' : 'Backup Total (ZIP)'}
+          </button>
+
+           {activeExport === 'backup-total' && (
+               <div style={{ marginTop: '1rem' }}>
+                 <p style={{ color: '#005bb5', fontWeight: 'bold' }}>Gerando pacote... por favor não feche a página.</p>
+                 <small style={{ color: '#666' }}>O arquivo será baixado automaticamente ao final.</small>
+               </div>
+           )}
       </div>
     </div>
   );

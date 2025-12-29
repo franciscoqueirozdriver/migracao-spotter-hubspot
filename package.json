@@ -11,12 +11,17 @@
     "export:custom": "tsx scripts/exporters/run-export.ts"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
+    "exceljs": "^4.4.0",
     "next": "14.2.3",
+    "papaparse": "^5.5.3",
     "react": "^18",
     "react-dom": "^18"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/node": "^20",
+    "@types/papaparse": "^5.5.2",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^8.57.1",
