@@ -56,6 +56,12 @@ export async function GET(req: NextRequest) {
   const passThrough = new PassThrough();
   const archive = archiver('zip', { zlib: { level: 9 } });
 
+  archive.on('error', (err) => {
+    console.error('Archiver error:', err);
+    // Try to emit error on passThrough to break connection if possible
+    passThrough.destroy(err);
+  });
+
   archive.pipe(passThrough);
 
   // 2. Prepare Logging & Stats
@@ -114,6 +120,7 @@ export async function GET(req: NextRequest) {
                 }
             }
 
+            // Important: End the stream for this file so archiver knows it's done
             csvStream.end();
 
             entityStats[config.key] = { count, status: 'OK', endpoint: config.endpoint };
@@ -161,8 +168,12 @@ export async function GET(req: NextRequest) {
 
     } catch (err) {
       console.error('Backup Fatal Error', err);
-      archive.append(JSON.stringify(err), { name: 'FATAL_ERROR.json' });
+      // Try to append error log if archive is still open
+      try {
+          archive.append(JSON.stringify(err), { name: 'FATAL_ERROR.json' });
+      } catch (e) { /* ignore */ }
     } finally {
+      // ALWAYS finalize
       archive.finalize();
     }
   })();
