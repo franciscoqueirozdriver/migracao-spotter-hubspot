@@ -4,23 +4,86 @@ import React, { useState, useEffect } from 'react';
 
 type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'losts';
 
+interface JobStatus {
+  jobId: string;
+  status: 'queued' | 'running' | 'done' | 'error';
+  step?: string;
+  page?: number;
+  totalItems?: number;
+  startedAt: string;
+  finishedAt?: string;
+  errorMessage?: string;
+}
+
+interface BackupFile {
+  path: string;
+  size: number;
+  updatedAt: string;
+}
+
 export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
-  const [activeExport, setActiveExport] = useState<ExportableEntity | 'backup-total' | null>(null);
+  const [activeExport, setActiveExport] = useState<ExportableEntity | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
-  // Poll for logs if we have a runId
+  // Backup Total State
+  const [backupJobId, setBackupJobId] = useState<string | null>(null);
+  const [backupStatus, setBackupStatus] = useState<JobStatus | null>(null);
+  const [backupFiles, setBackupFiles] = useState<BackupFile[]>([]);
+  const [isBackupLoading, setIsBackupLoading] = useState(false);
+
+  // Poll for logs if we have a runId (Legacy Export)
   useEffect(() => {
       let interval: NodeJS.Timeout;
       if (currentRunId) {
-          // Initial fetch
           fetchLogs(currentRunId);
           interval = setInterval(() => fetchLogs(currentRunId), 2000);
       }
       return () => clearInterval(interval);
   }, [currentRunId]);
+
+  // Poll for Backup Status
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (backupJobId && backupStatus?.status !== 'done' && backupStatus?.status !== 'error') {
+      const checkStatus = async () => {
+        try {
+          const res = await fetch(`/api/backup-total/status?jobId=${backupJobId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setBackupStatus(data);
+            if (data.status === 'done') {
+               loadBackupFiles(backupJobId);
+               setIsBackupLoading(false);
+            }
+            if (data.status === 'error') {
+               setIsBackupLoading(false);
+            }
+          }
+        } catch (e) {
+          console.error("Status check failed", e);
+        }
+      };
+
+      checkStatus();
+      interval = setInterval(checkStatus, 2000);
+    }
+    return () => clearInterval(interval);
+  }, [backupJobId, backupStatus?.status]);
+
+  const loadBackupFiles = async (jobId: string) => {
+      try {
+          const res = await fetch(`/api/backup-total/files?jobId=${jobId}`);
+          if (res.ok) {
+              const data = await res.json();
+              setBackupFiles(data.files || []);
+          }
+      } catch (e) {
+          console.error("Failed to load files", e);
+      }
+  };
 
   const fetchLogs = async (runId: string) => {
       try {
@@ -45,12 +108,8 @@ export default function HomePage() {
 
     try {
       const response = await fetch(`/api/export?mode=total&entity=${entity}`);
-
-      // Get Run ID immediately to start logging even if download takes time
       const runId = response.headers.get('X-Export-Run-Id');
-      if (runId) {
-          setCurrentRunId(runId);
-      }
+      if (runId) setCurrentRunId(runId);
 
       if (!response.ok) {
         let errorMsg = `Erro ${response.status}`;
@@ -82,45 +141,22 @@ export default function HomePage() {
   };
 
   const startBackupTotal = async () => {
-    if (isLoading) return;
-
-    setIsLoading(true);
-    setActiveExport('backup-total');
-    setError(null);
-    // Logs for backup are inside the ZIP, no streaming logs for now
-    setLogs(['Iniciando Backup Total...', 'O processo pode levar vários minutos.', 'Aguarde o download do arquivo ZIP...']);
-    setCurrentRunId(null);
+    if (isBackupLoading) return;
+    setIsBackupLoading(true);
+    setBackupJobId(null);
+    setBackupStatus(null);
+    setBackupFiles([]);
 
     try {
-      const response = await fetch('/api/backup-total');
-
-      if (!response.ok) {
-         let errorMsg = `Erro ${response.status}`;
-         try {
-             const data = await response.json();
-             errorMsg = data.message || errorMsg;
-         } catch (e) { }
-         throw new Error(errorMsg);
-      }
-
-      const blob = await response.blob();
-      const disposition = response.headers.get('Content-Disposition');
-      let fileName = 'spotter-backup.zip';
-      if (disposition && disposition.includes('filename=')) {
-        const match = disposition.match(/filename="?([^"]+)"?/);
-        if (match && match[1]) fileName = match[1];
-      }
-
-      downloadBlob(blob, fileName);
-      setLogs(prev => [...prev, 'Download iniciado com sucesso!']);
-
-    } catch (err) {
-       const msg = err instanceof Error ? err.message : 'Ocorreu um erro desconhecido no backup.';
-       setError(msg);
-       setLogs(prev => [...prev, `[BACKUP ERROR] ${msg}`]);
-    } finally {
-        setIsLoading(false);
-        setActiveExport(null);
+        const res = await fetch('/api/backup-total/start', { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to start backup');
+        const data = await res.json();
+        setBackupJobId(data.jobId);
+        setBackupStatus({ jobId: data.jobId, status: 'queued', startedAt: new Date().toISOString() });
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Unknown error';
+        alert(msg);
+        setIsBackupLoading(false);
     }
   };
 
@@ -140,43 +176,17 @@ export default function HomePage() {
       <h1>Migração Spotter → HubSpot</h1>
       <p>Exportação de dados (Modo Total - Auditoria Completa)</p>
 
+      {/* --- Legacy Exports --- */}
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9', marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>1. Exportar CSV</h2>
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-          <button
-            onClick={() => startExport('companies')}
-            disabled={isLoading}
-            style={buttonStyle(isLoading && activeExport !== 'companies')}
-          >
-            {activeExport === 'companies' ? 'Exportando...' : 'Exportar Empresas'}
-          </button>
-
-          <button
-            onClick={() => startExport('contacts')}
-            disabled={isLoading}
-            style={buttonStyle(isLoading && activeExport !== 'contacts')}
-          >
-            {activeExport === 'contacts' ? 'Exportando...' : 'Exportar Contatos'}
-          </button>
-
-          <button
-            onClick={() => startExport('deals_line_items')}
-            disabled={isLoading}
-            style={{ ...buttonStyle(isLoading && activeExport !== 'deals_line_items'), backgroundColor: '#005bb5' }}
-          >
-            {activeExport === 'deals_line_items' ? 'Exportando...' : 'Exportar Negócios + Itens de Linha'}
-          </button>
-
-          <button
-            onClick={() => startExport('losts')}
-            disabled={isLoading}
-            style={{ ...buttonStyle(isLoading && activeExport !== 'losts'), backgroundColor: '#d93025' }}
-          >
-            {activeExport === 'losts' ? 'Exportando...' : 'Baixar Descartados (Losts)'}
-          </button>
+          <button onClick={() => startExport('companies')} disabled={isLoading} style={buttonStyle(isLoading && activeExport !== 'companies')}>Empresas</button>
+          <button onClick={() => startExport('contacts')} disabled={isLoading} style={buttonStyle(isLoading && activeExport !== 'contacts')}>Contatos</button>
+          <button onClick={() => startExport('deals_line_items')} disabled={isLoading} style={{ ...buttonStyle(isLoading && activeExport !== 'deals_line_items'), backgroundColor: '#005bb5' }}>Negócios + Itens</button>
+          <button onClick={() => startExport('losts')} disabled={isLoading} style={{ ...buttonStyle(isLoading && activeExport !== 'losts'), backgroundColor: '#d93025' }}>Descartados (Losts)</button>
         </div>
-        {isLoading && activeExport !== 'backup-total' && <p style={{ marginTop: '1rem', color: '#666' }}>Processando... Isso pode levar alguns minutos.</p>}
-        {error && activeExport !== 'backup-total' && (
+        {isLoading && <p style={{ marginTop: '1rem', color: '#666' }}>Processando... Isso pode levar alguns minutos.</p>}
+        {error && (
             <div style={{ color: 'red', marginTop: '1rem', border: '1px solid red', padding: '1rem', borderRadius: '5px', backgroundColor: '#ffebee' }}>
             <strong>Erro:</strong> {error}
             </div>
@@ -184,45 +194,76 @@ export default function HomePage() {
       </div>
 
       <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#fff', marginBottom: '2rem' }}>
-          <h2 style={{ fontSize: '1.2rem', margin: '0 0 1rem 0' }}>2. Auditoria e Logs</h2>
-
-          <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', maxHeight: '500px', overflowY: 'auto' }}>
-              {logs.length === 0 ? (
-                  <p style={{ color: '#777', margin: 0 }}>Nenhum log disponível.</p>
-              ) : (
-                  <pre style={{
-                      whiteSpace: 'pre-wrap',
-                      fontSize: '0.85rem',
-                      fontFamily: 'monospace',
-                      margin: 0,
-                      color: '#333'
-                  }}>
-                      {logs.join('\n')}
-                  </pre>
+          <h2 style={{ fontSize: '1.2rem', margin: '0 0 1rem 0' }}>2. Auditoria e Logs (Exportação Individual)</h2>
+          <div style={{ backgroundColor: '#f4f4f4', padding: '1rem', borderRadius: '5px', maxHeight: '300px', overflowY: 'auto' }}>
+              {logs.length === 0 ? <p style={{ color: '#777', margin: 0 }}>Nenhum log disponível.</p> : (
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', fontFamily: 'monospace', margin: 0, color: '#333' }}>{logs.join('\n')}</pre>
               )}
           </div>
       </div>
 
+      {/* --- New Backup Total UI --- */}
       <div style={{ border: '1px solid #333', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#eef', marginTop: '2rem' }}>
-          <h2 style={{ fontSize: '1.2rem', marginBottom: '0.5rem', color: '#333' }}>Admin / Avançado</h2>
+          <h2 style={{ fontSize: '1.2rem', marginBottom: '0.5rem', color: '#333' }}>3. Admin / Backup Total (No-ZIP)</h2>
           <p style={{ marginBottom: '1rem', fontSize: '0.9rem', color: '#555' }}>
-              Funcionalidades de uso restrito. Gera um arquivo ZIP contendo todos os dados disponíveis na API (paginação completa).
+              Gera todos os arquivos no servidor e permite download individual. Evita corrupção de arquivos grandes.
           </p>
 
-          <button
-            onClick={startBackupTotal}
-            disabled={isLoading}
-            style={{ ...buttonStyle(isLoading && activeExport !== 'backup-total'), backgroundColor: '#333', border: '1px solid #000' }}
-          >
-            {activeExport === 'backup-total' ? 'Gerando Backup (Aguarde)...' : 'Backup Total (ZIP)'}
-          </button>
+          {!backupJobId && (
+              <button
+                onClick={startBackupTotal}
+                disabled={isBackupLoading}
+                style={{ ...buttonStyle(isBackupLoading), backgroundColor: '#333', border: '1px solid #000' }}
+              >
+                {isBackupLoading ? 'Iniciando...' : 'Iniciar Backup Total'}
+              </button>
+          )}
 
-           {activeExport === 'backup-total' && (
-               <div style={{ marginTop: '1rem' }}>
-                 <p style={{ color: '#005bb5', fontWeight: 'bold' }}>Gerando pacote... por favor não feche a página.</p>
-                 <small style={{ color: '#666' }}>O arquivo será baixado automaticamente ao final.</small>
-               </div>
-           )}
+          {backupStatus && (
+              <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#fff', borderRadius: '5px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <strong>Status: {backupStatus.status.toUpperCase()}</strong>
+                      <span>Job ID: {backupStatus.jobId.slice(0, 8)}...</span>
+                  </div>
+
+                  {backupStatus.status === 'running' && (
+                      <div style={{ color: '#0070f3' }}>
+                          <p>Etapa atual: <strong>{backupStatus.step}</strong></p>
+                          <p>Página: {backupStatus.page || 0} | Itens processados: {backupStatus.totalItems || 0}</p>
+                          <small>Atualizando automaticamente...</small>
+                      </div>
+                  )}
+
+                  {backupStatus.status === 'error' && (
+                      <div style={{ color: 'red' }}>
+                          <p>Erro: {backupStatus.errorMessage}</p>
+                          <button onClick={startBackupTotal} style={{ marginTop: '0.5rem', padding: '5px 10px' }}>Tentar Novamente</button>
+                      </div>
+                  )}
+
+                  {backupStatus.status === 'done' && (
+                      <div>
+                          <p style={{ color: 'green', marginBottom: '1rem' }}>Backup concluído com sucesso!</p>
+                          <h4 style={{ margin: '0.5rem 0' }}>Arquivos Gerados:</h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.5rem', maxHeight: '400px', overflowY: 'auto' }}>
+                              {backupFiles.map((f) => (
+                                  <React.Fragment key={f.path}>
+                                      <span style={{ fontSize: '0.9rem', fontFamily: 'monospace' }}>{f.path}</span>
+                                      <a
+                                        href={`/api/backup-total/download?jobId=${backupJobId}&path=${f.path}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ color: '#0070f3', textDecoration: 'none', fontWeight: 'bold' }}
+                                      >
+                                          [Baixar {(f.size / 1024).toFixed(1)} KB]
+                                      </a>
+                                  </React.Fragment>
+                              ))}
+                          </div>
+                      </div>
+                  )}
+              </div>
+          )}
       </div>
     </div>
   );
