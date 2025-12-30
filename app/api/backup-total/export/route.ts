@@ -43,6 +43,15 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const entityKey = searchParams.get('entity');
 
+  if (entityKey === 'ping') {
+    return new NextResponse('status,message\n200,OK', {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="ping.csv"',
+      },
+    });
+  }
+
   if (!entityKey || !ENTITIES[entityKey]) {
     return NextResponse.json(
         { message: 'Invalid or missing entity. Available: ' + Object.keys(ENTITIES).join(', ') },
