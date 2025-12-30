@@ -5,52 +5,49 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const token = process.env.SPOTTER_TOKEN_EXACT || 'NOT_SET';
-  const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
+  const token = process.env.SPOTTER_TOKEN_EXACT;
+  const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com/v3/';
 
-  // Safe endpoint to test
-  const testPath = '/api/v3/stages';
+  // Safe construction for test
+  const safeBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const testEndpoint = 'stages';
+  const finalUrl = new URL(testEndpoint, safeBase).toString();
 
-  const normalizedBase = baseUrl.replace(/\/$/, '');
-  const normalizedPath = testPath.replace(/^\//, '');
-  const finalUrl = `${normalizedBase}/${normalizedPath}`;
+  let upstreamResult = null;
+  let status = 200;
 
-  let fetchResult = {};
-
-  try {
-      const res = await fetch(finalUrl, {
-          headers: {
-              'token_exact': token,
-              'Content-Type': 'application/json'
-          }
+  if (token) {
+    try {
+      const res = await fetch(`${finalUrl}?$top=1`, {
+        headers: { 'token_exact': token }
       });
-
+      status = res.status;
       const text = await res.text();
-      const snippet = text.slice(0, 500);
-
-      fetchResult = {
-          status: res.status,
-          statusText: res.statusText,
-          ok: res.ok,
-          finalUrl,
-          headers: Object.fromEntries(res.headers.entries()),
-          bodySnippet: snippet
-      };
-
-  } catch (e) {
-      fetchResult = {
-          error: e instanceof Error ? e.message : String(e),
-          finalUrl
-      };
+      try {
+        upstreamResult = JSON.parse(text);
+      } catch {
+        upstreamResult = text.slice(0, 500); // Return raw text if not JSON
+      }
+    } catch (err) {
+      status = 502;
+      upstreamResult = { error: String(err) };
+    }
+  } else {
+    upstreamResult = { error: 'No token provided' };
   }
 
   return NextResponse.json({
     config: {
-        baseUrl,
-        tokenSet: token !== 'NOT_SET',
-        tokenLength: token.length,
-        nodeVersion: process.version,
+      baseUrl,
+      safeBase,
+      testEndpoint,
+      finalUrl,
+      hasToken: !!token,
+      tokenMasked: token ? `${token.slice(0, 4)}...${token.slice(-4)}` : null
     },
-    testFetch: fetchResult
-  });
+    upstream: {
+      status,
+      result: upstreamResult
+    }
+  }, { status: 200 }); // Always return 200 from debug endpoint itself to view diagnostics
 }

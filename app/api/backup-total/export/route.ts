@@ -14,35 +14,37 @@ interface EntityConfig {
   filename: string;
 }
 
+// DEFINITION: V3-relative paths (no /api/v3 prefix)
 const ENTITIES: Record<string, EntityConfig> = {
   // Core
-  'leads': { key: 'leads', endpoint: '/api/v3/Leads', filename: 'leads.csv' },
-  'companies': { key: 'companies', endpoint: '/api/v3/Organization', filename: 'companies.csv' },
-  'contacts': { key: 'contacts', endpoint: '/api/v3/Persons', filename: 'contacts.csv' },
-  'users': { key: 'users', endpoint: '/api/v3/Users', filename: 'users.csv' },
-  'sellers': { key: 'sellers', endpoint: '/api/v3/Sellers', filename: 'sellers.csv' },
-  'groups': { key: 'groups', endpoint: '/api/v3/Groups', filename: 'groups.csv' },
+  'leads': { key: 'leads', endpoint: 'Leads', filename: 'leads.csv' },
+  'companies': { key: 'companies', endpoint: 'Organization', filename: 'companies.csv' },
+  'contacts': { key: 'contacts', endpoint: 'Persons', filename: 'contacts.csv' },
+  'users': { key: 'users', endpoint: 'Users', filename: 'users.csv' },
+  'sellers': { key: 'sellers', endpoint: 'Sellers', filename: 'sellers.csv' },
+  'groups': { key: 'groups', endpoint: 'Groups', filename: 'groups.csv' },
 
   // Events
-  'losts': { key: 'losts', endpoint: '/api/v3/Losts', filename: 'lead_losts.csv' },
-  'history': { key: 'history', endpoint: '/api/v3/transferHistory', filename: 'lead_transfers.csv' },
-  'meetings': { key: 'meetings', endpoint: '/api/v3/Meetings', filename: 'meetings.csv' },
+  'losts': { key: 'losts', endpoint: 'Losts', filename: 'lead_losts.csv' },
+  'history': { key: 'history', endpoint: 'transferHistory', filename: 'lead_transfers.csv' },
+  'meetings': { key: 'meetings', endpoint: 'Meetings', filename: 'meetings.csv' },
 
   // Dictionaries
-  'funnels': { key: 'funnels', endpoint: '/api/v3/funnels', filename: 'funnels.csv' },
-  'stages': { key: 'stages', endpoint: '/api/v3/stages', filename: 'stages.csv' },
-  'sources': { key: 'sources', endpoint: '/api/v3/Sources', filename: 'sources.csv' },
-  'discard_reasons': { key: 'discard_reasons', endpoint: '/api/v3/DiscardReason', filename: 'discard_reasons.csv' },
-  'products': { key: 'products', endpoint: '/api/v3/products', filename: 'products.csv' },
-  'tasks_type': { key: 'tasks_type', endpoint: '/api/v3/TasksType', filename: 'tasks_type.csv' },
-  'custom_fields_leads': { key: 'custom_fields_leads', endpoint: '/api/v3/CustomFields', filename: 'custom_fields_leads.csv' },
-  'custom_fields_orgs': { key: 'custom_fields_orgs', endpoint: '/api/v3/CustomFieldsOrganization', filename: 'custom_fields_companies.csv' },
+  'funnels': { key: 'funnels', endpoint: 'funnels', filename: 'funnels.csv' },
+  'stages': { key: 'stages', endpoint: 'stages', filename: 'stages.csv' },
+  'sources': { key: 'sources', endpoint: 'Sources', filename: 'sources.csv' },
+  'discard_reasons': { key: 'discard_reasons', endpoint: 'DiscardReason', filename: 'discard_reasons.csv' },
+  'products': { key: 'products', endpoint: 'products', filename: 'products.csv' },
+  'tasks_type': { key: 'tasks_type', endpoint: 'TasksType', filename: 'tasks_type.csv' },
+  'custom_fields_leads': { key: 'custom_fields_leads', endpoint: 'CustomFields', filename: 'custom_fields_leads.csv' },
+  'custom_fields_orgs': { key: 'custom_fields_orgs', endpoint: 'CustomFieldsOrganization', filename: 'custom_fields_companies.csv' },
 };
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const entityKey = searchParams.get('entity');
 
+  // Ping check for internal route availability
   if (entityKey === 'ping') {
     return new NextResponse('status,message\n200,OK', {
       headers: {
@@ -61,16 +63,19 @@ export async function GET(req: NextRequest) {
 
   const config = ENTITIES[entityKey];
   const token = process.env.SPOTTER_TOKEN_EXACT;
-  const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
+
+  // FIXED: Default to V3 root (trailing slash important for new URL concatenation)
+  const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com/v3/';
 
   if (!token) {
     return NextResponse.json({ message: 'Missing SPOTTER_TOKEN_EXACT' }, { status: 500 });
   }
 
-  // Safe URL construction
-  const normalizedBase = baseUrl.replace(/\/$/, '');
-  const normalizedPath = config.endpoint.replace(/^\//, '');
-  const finalUrl = `${normalizedBase}/${normalizedPath}`;
+  // FIXED: Robust URL construction using URL class
+  // We ensure baseUrl ends with / and endpoint has no leading / to prevent double slashes or replacements
+  const safeBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const safePath = config.endpoint.replace(/^\//, '');
+  const finalUrl = new URL(safePath, safeBase).toString();
 
   // 1. Pre-flight Check: Ensure Endpoint Exists
   try {
@@ -89,7 +94,7 @@ export async function GET(req: NextRequest) {
           return NextResponse.json({
               message: `Upstream Error: ${res.status} ${res.statusText}`,
               details: text.slice(0, 300),
-              finalUrl
+              finalUrl // Returned for debugging
           }, { status: res.status });
       }
   } catch (err) {
@@ -127,6 +132,8 @@ export async function GET(req: NextRequest) {
           }
       } catch (err) {
           console.error(`Export stream failed for ${entityKey}:`, err);
+          // If we already started writing CSV, we can't switch to JSON.
+          // We append an error message to the file to invalidate it.
           passThrough.write(`\n\nERROR_DURING_STREAM: ${err instanceof Error ? err.message : String(err)}\n`);
       } finally {
           passThrough.end();
