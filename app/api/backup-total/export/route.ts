@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
               message: `Upstream Error: ${res.status} ${res.statusText}`,
               details: text.slice(0, 300),
               finalUrl
-          }, { status: res.status }); // Propagate status (e.g. 404, 401)
+          }, { status: res.status });
       }
   } catch (err) {
       console.error(`[backup-total] entity ${entityKey} network error`, err);
@@ -97,7 +97,6 @@ export async function GET(req: NextRequest) {
 
   (async () => {
       try {
-          // console.log(`Starting export stream for ${entityKey} from ${finalUrl}`);
           const generator = fetchODataPages(finalUrl, token);
 
           let headers: string[] | null = null;
@@ -119,8 +118,6 @@ export async function GET(req: NextRequest) {
           }
       } catch (err) {
           console.error(`Export stream failed for ${entityKey}:`, err);
-          // If headers are already sent, we can't send JSON.
-          // We write a marker in the CSV to indicate partial failure.
           passThrough.write(`\n\nERROR_DURING_STREAM: ${err instanceof Error ? err.message : String(err)}\n`);
       } finally {
           passThrough.end();

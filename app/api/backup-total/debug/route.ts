@@ -9,14 +9,8 @@ export async function GET() {
   const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';
 
   // Safe endpoint to test
-  const testPath = '/api/v3/stages'; // Commonly available
+  const testPath = '/api/v3/stages';
 
-  // Construct URL safely
-  // If baseUrl has path, we need to be careful.
-  // new URL('/foo', 'https://host/bar') -> 'https://host/foo' (drops /bar)
-  // We want concatenation if baseUrl includes a path prefix.
-
-  // Heuristic: remove trailing slash from base, remove leading slash from path
   const normalizedBase = baseUrl.replace(/\/$/, '');
   const normalizedPath = testPath.replace(/^\//, '');
   const finalUrl = `${normalizedBase}/${normalizedPath}`;
