@@ -3,8 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exportDataForMode, ExportMode, ExportableEntity } from '@/lib/exporter';
 
 export const dynamic = 'force-dynamic';
+// Try to increase duration on supported plans (Pro/Enterprise).
+// Standard is 10s (Hobby) or 60s (Pro).
+// Setting higher just in case, but code-level timeout is the real safety net.
+export const maxDuration = 300;
 
-const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
+const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'leads'];
 
 function parseEntities(entitiesParam: string | null): ExportableEntity[] {
   if (!entitiesParam) {
@@ -25,8 +29,16 @@ function parseEntities(entitiesParam: string | null): ExportableEntity[] {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const mode = (searchParams.get('mode') ?? 'sold') as ExportMode;
-    const entities = parseEntities(searchParams.get('entities'));
+    const requestedMode = searchParams.get('mode') ?? 'sold';
+
+    // OVERRIDE: Force 'total' mode regardless of what frontend requests (unless it's custom in future).
+    // The user explicitly requested to "forget sold" and prioritize total full export.
+    // We treat 'sold' from UI as an intent to export data, but we fulfill it with the robust 'total' strategy.
+    let mode: ExportMode = 'total';
+
+    // Handle case where entities param might be missing or empty strings
+    const entitiesParam = searchParams.get('entities');
+    const entities = parseEntities(entitiesParam);
 
     if (entities.length === 0) {
       return NextResponse.json({ message: 'Nenhuma entidade selecionada para exportação.' }, { status: 400 });
@@ -45,16 +57,22 @@ export async function GET(request: NextRequest) {
     // A função agora retorna um objeto com o conteúdo do CSV e os logs
     const { csvContent, logContent, fileName } = await exportDataForMode(mode, entities, token, baseUrl);
 
+    // Append a notice to logs about the mode override if applicable
+    const finalLogContent = requestedMode !== 'total'
+        ? `[SYSTEM] Modo solicitado '${requestedMode}' foi automaticamente convertido para 'total' para garantir exportação completa.\n${logContent}`
+        : logContent;
+
     // Retorna a resposta como JSON para o frontend
     return NextResponse.json({
       csvContent,
-      logContent,
+      logContent: finalLogContent,
       fileName
     });
 
   } catch (error) {
     console.error('Falha na exportação:', error);
     const errorMessage = error instanceof Error ? error.message : 'Ocorreu um erro desconhecido no servidor.';
+    // Retornamos 500, mas o erro será JSON válido agora, ao contrário do timeout do Vercel
     return NextResponse.json({ message: errorMessage }, { status: 500 });
   }
 }

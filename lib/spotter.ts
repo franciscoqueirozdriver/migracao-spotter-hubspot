@@ -1,5 +1,7 @@
+import { LogCallback } from './exporter';
+
 // Type definitions for Spotter API response
-interface SpotterProduct {
+export interface SpotterProduct {
   id: number;
   value: number | null | undefined;
   description: string;
@@ -18,8 +20,10 @@ interface HubSpotProduct {
   'ID do Produto no Spotter': number;
 }
 
-// Type definition for the logging callback
-type LogCallback = (message: string) => void;
+export type ODataResponse<T> = {
+  value?: T[];
+  ['@odata.nextLink']?: string;
+};
 
 // Fetch all products from Spotter API, handling pagination and logging
 async function fetchAllProducts(token: string, baseUrl: string, log: LogCallback): Promise<SpotterProduct[]> {
@@ -79,43 +83,80 @@ export async function exportProductsToCsv(token: string, baseUrl: string, log: L
   return csvContent;
 }
 
-// lib/spotter.ts
-
-export type ODataResponse<T> = {
-  value?: T[];
-  ['@odata.nextLink']?: string;
-};
-
+/**
+ * Enhanced OData fetcher with robust timeout protection.
+ * @param initialUrl The OData endpoint URL
+ * @param token Authentication token
+ * @param log Logger callback
+ * @param maxDurationSeconds Hard timeout in seconds (default 50s for Vercel 60s limit).
+ *                           If exceeded, returns partial data instead of crashing.
+ */
 export async function fetchAllSpotterOData<T>(
   initialUrl: string,
   token: string,
-  log: LogCallback
+  log: LogCallback,
+  maxDurationSeconds: number = 50
 ): Promise<T[]> {
   let allItems: T[] = [];
   let nextUrl: string | undefined = initialUrl;
+
+  // NOTE: Implicit optimization ($top=120) removed as per user request.
+  // We rely on the provided URL or API defaults.
+
   let page = 1;
   const maxRetries = 5;
+  const visitedUrls = new Set<string>();
+  const startTime = Date.now();
+  const timeoutMs = maxDurationSeconds * 1000;
 
-  log(`Iniciando busca OData em ${initialUrl}`);
+  log(`Iniciando busca OData em ${initialUrl} (Timeout: ${maxDurationSeconds}s)`);
 
   while (nextUrl) {
-    log(`Buscando página ${page}...`);
+    // 1. TIMEOUT CHECK
+    const elapsedTime = Date.now() - startTime;
+    if (elapsedTime > timeoutMs) {
+        log(`⚠️ ALERTA CRÍTICO: Limite de tempo de execução (${maxDurationSeconds}s) atingido.`);
+        log(`⚠️ Retornando ${allItems.length} itens coletados até agora para evitar erro 504.`);
+        break;
+    }
+
+    // 2. Loop protection
+    if (visitedUrls.has(nextUrl)) {
+        log(`ALERTA: Loop de paginação detectado. URL já visitada: ${nextUrl}. Interrompendo busca.`);
+        break;
+    }
+    visitedUrls.add(nextUrl);
+
+    log(`Buscando página ${page} (Decorridos: ${(elapsedTime/1000).toFixed(1)}s)...`);
 
     let response: Response | null = null;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      response = await fetch(nextUrl, {
-        headers: { 'token_exact': token },
-      });
+      // Check timeout inside retry loop too
+      if (Date.now() - startTime > timeoutMs) break;
 
-      if (response.status !== 503) {
-        break; // Success or non-retryable error
+      try {
+        response = await fetch(nextUrl, {
+          headers: { 'token_exact': token },
+        });
+
+        if (response.status !== 503) {
+          break; // Success or non-retryable error
+        }
+      } catch (error) {
+        if (attempt === maxRetries) throw error;
       }
 
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s, 8s
-        log(`Tentativa ${attempt} falhou com status 503. Tentando novamente em ${delay / 1000}s...`);
+        log(`Tentativa ${attempt} falhou com status 503 (ou erro de rede). Tentando novamente em ${delay / 1000}s...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
+    }
+
+    // Double check if we broke out due to timeout
+    if (Date.now() - startTime > timeoutMs) {
+         log(`⚠️ Timeout durante tentativas de conexão.`);
+         break;
     }
 
     if (!response || !response.ok) {
@@ -128,23 +169,26 @@ export async function fetchAllSpotterOData<T>(
     const data: ODataResponse<T> = await response.json();
     const items = data.value ?? [];
 
-    if (items.length === 0) {
-      log('Recebida uma página vazia. Finalizando a busca.');
-      break;
+    if (items.length > 0) {
+      allItems = allItems.concat(items);
+      log(`Recebidos ${items.length} itens.`);
+    } else {
+      log(`Página ${page} retornou 0 itens.`);
     }
 
-    allItems = allItems.concat(items);
-    log(`Recebidos ${items.length} itens.`);
     nextUrl = data['@odata.nextLink'];
     page++;
+
+    // Safety break
+    if (page > 20000) {
+        log('ALERTA: Limite máximo de páginas (20000) atingido. Interrompendo busca por segurança.');
+        break;
+    }
   }
 
   log(`Busca OData concluída. Total de ${allItems.length} itens recebidos.`);
   return allItems;
 }
-
-// The helper functions need to be included as well, but they don't change.
-// I'll paste them back in.
 
 function removeDuplicateProducts(products: SpotterProduct[]): SpotterProduct[] {
     const seen = new Set<number>();
