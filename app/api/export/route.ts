@@ -10,20 +10,22 @@ export const maxDuration = 300;
 
 const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'leads'];
 
-function parseEntities(entitiesParam: string | null): ExportableEntity[] {
-  if (!entitiesParam) {
-    // Se nenhum parâmetro for fornecido, podemos assumir um padrão ou lançar um erro.
-    // Para este caso, vamos assumir que o usuário deve sempre fornecer as entidades.
-    throw new Error('O parâmetro "entities" é obrigatório.');
-  }
-  const entities = entitiesParam.split(',');
-  const invalidEntities = entities.filter(e => !validEntities.includes(e as ExportableEntity));
+function normalizeEntities(input: unknown): string[] {
+  // Aceita: string, string[], ou qualquer coisa (valida)
+  const arr: unknown[] =
+    Array.isArray(input) ? input :
+    typeof input === "string" ? [input] :
+    input == null ? [] :
+    [input];
 
-  if (invalidEntities.length > 0) {
-    throw new Error(`Entidades inválidas fornecidas: ${invalidEntities.join(', ')}.`);
-  }
-
-  return entities as ExportableEntity[];
+  // Achata "a,b,c" e remove lixo
+  return arr
+    .flatMap((v) => {
+      if (typeof v !== "string") return [];
+      return v.split(","); // permite entities=a,b,c
+    })
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 export async function GET(request: NextRequest) {
@@ -36,13 +38,22 @@ export async function GET(request: NextRequest) {
     // We treat 'sold' from UI as an intent to export data, but we fulfill it with the robust 'total' strategy.
     let mode: ExportMode = 'total';
 
-    // Handle case where entities param might be missing or empty strings
-    const entitiesParam = searchParams.get('entities');
-    const entities = parseEntities(entitiesParam);
+    // ROBUST PARAMETER PARSING
+    const rawEntities = searchParams.getAll('entities');
+    const entitiesStrings = normalizeEntities(rawEntities);
 
-    if (entities.length === 0) {
-      return NextResponse.json({ message: 'Nenhuma entidade selecionada para exportação.' }, { status: 400 });
+    // 1. Check if empty
+    if (entitiesStrings.length === 0) {
+        return NextResponse.json({ message: 'Parâmetro "entities" ausente ou inválido.' }, { status: 400 });
     }
+
+    // 2. Validate against allowed values
+    const invalidEntities = entitiesStrings.filter(e => !validEntities.includes(e as ExportableEntity));
+    if (invalidEntities.length > 0) {
+        return NextResponse.json({ message: `Entidades inválidas fornecidas: ${invalidEntities.join(', ')}.` }, { status: 400 });
+    }
+
+    const entities = entitiesStrings as ExportableEntity[];
 
     const token = process.env.SPOTTER_TOKEN_EXACT;
     const baseUrl = process.env.SPOTTER_API_URL || 'https://api.exactspotter.com';

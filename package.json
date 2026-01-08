@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "export:baseline": "tsx scripts/exporters/run-baseline.ts",
+    "export:custom": "tsx scripts/exporters/run-export.ts"
   },
   "dependencies": {
     "next": "14.2.3",
@@ -20,6 +22,7 @@
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.3",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
