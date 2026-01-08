@@ -94,19 +94,34 @@ export async function fetchAllSpotterOData<T>(
   let allItems: T[] = [];
   let nextUrl: string | undefined = initialUrl;
   let page = 1;
+  const maxRetries = 5;
 
   log(`Iniciando busca OData em ${initialUrl}`);
 
   while (nextUrl) {
     log(`Buscando página ${page}...`);
-    const response = await fetch(nextUrl, {
-      headers: { 'token_exact': token },
-    });
 
-    if (!response.ok) {
-      const errorText = `A API do Spotter retornou um erro: ${response.status} ${response.statusText}.`;
+    let response: Response | null = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      response = await fetch(nextUrl, {
+        headers: { 'token_exact': token },
+      });
+
+      if (response.status !== 503) {
+        break; // Success or non-retryable error
+      }
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s, 8s
+        log(`Tentativa ${attempt} falhou com status 503. Tentando novamente em ${delay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    if (!response || !response.ok) {
+      const statusText = response ? `${response.status} ${response.statusText}` : 'sem resposta';
+      const errorText = `A API do Spotter retornou um erro: ${statusText}.`;
       log(`ERRO: ${errorText}`);
-      // Lançar o erro permite que o chamador decida como lidar com ele (ex: fallback)
       throw new Error(errorText);
     }
 
