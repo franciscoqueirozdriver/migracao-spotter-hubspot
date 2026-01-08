@@ -1,207 +1,156 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
+
+type ExportMode = 'sold' | 'inProgress' | 'lost';
+type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
+
+const entityConfig: Record<ExportableEntity, { label: string }> = {
+  companies: { label: 'Empresas' },
+  contacts: { label: 'Contatos (Não implementado)' },
+  deals_line_items: { label: 'Negócios + Itens de Linha (Não implementado)' },
+};
+
+const modeConfig: Record<ExportMode, { label: string; description: string; entities: ExportableEntity[] }> = {
+  sold: {
+    label: 'Vendas concluídas',
+    description: 'Histórico financeiro: Empresas, Contatos, Negócios e Itens de Linha.',
+    entities: ['companies', 'contacts', 'deals_line_items'],
+  },
+  inProgress: {
+    label: 'Em andamento (Não implementado)',
+    description: 'Pipeline ativo.',
+    entities: [],
+  },
+  lost: {
+    label: 'Perdidos (Não implementado)',
+    description: 'Histórico comercial.',
+    entities: [],
+  },
+};
 
 export default function HomePage() {
-  const [isProductsLoading, setIsProductsLoading] = useState(false);
-  const [isCompaniesLoading, setIsCompaniesLoading] = useState(false);
-  const [isContactsLoading, setIsContactsLoading] = useState(false);
-  const [isDealsLoading, setIsDealsLoading] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [mode, setMode] = useState<ExportMode>('sold');
+  const [selectedEntity, setSelectedEntity] = useState<ExportableEntity>('companies');
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const logContainerRef = useRef<HTMLPreElement>(null);
+  const [lastRunLogs, setLastRunLogs] = useState<string | null>(null);
 
-  const startExport = (entity: 'products' | 'companies' | 'contacts' | 'deals') => {
-    let isLoading, setIsLoading, apiUrl, fileName;
-
-    switch (entity) {
-      case 'products':
-        isLoading = isProductsLoading;
-        setIsLoading = setIsProductsLoading;
-        apiUrl = '/api/export-products';
-        fileName = 'products_hubspot.csv';
-        break;
-      case 'companies':
-        isLoading = isCompaniesLoading;
-        setIsLoading = setIsCompaniesLoading;
-        apiUrl = '/api/export-companies';
-        fileName = 'spotter_to_hubspot_empresas.csv';
-        break;
-      case 'contacts':
-        isLoading = isContactsLoading;
-        setIsLoading = setIsContactsLoading;
-        apiUrl = '/api/export-contacts';
-        fileName = 'spotter_to_hubspot_contatos.csv';
-        break;
-      case 'deals':
-        isLoading = isDealsLoading;
-        setIsLoading = setIsDealsLoading;
-        apiUrl = '/api/export-deals-line-items';
-        fileName = 'spotter_to_hubspot_deals_line_items.csv';
-        break;
-    }
-
-    if (isLoading) return;
+  const startExport = async () => {
+    if (isLoading || !selectedEntity) return;
 
     setIsLoading(true);
     setError(null);
-    setLogs([]); // Clear logs for new export
+    setLastRunLogs(null);
 
-    const eventSource = new EventSource(apiUrl);
+    try {
+      const apiUrl = `/api/export?mode=${mode}&entities=${selectedEntity}`;
+      const response = await fetch(apiUrl);
+      const data = await response.json();
 
-    eventSource.onopen = () => {
-      console.log(`Conexão de streaming aberta para ${entity}.`);
-      setLogs((prevLogs) => [...prevLogs, `Iniciando exportação de ${entity}...`]);
-    };
-
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === 'log') {
-        setLogs((prevLogs) => [...prevLogs, data.message]);
-      } else if (data.type === 'done') {
-        setLogs((prevLogs) => [...prevLogs, 'Exportação principal concluída. Iniciando download...']);
-        downloadCsv(data.csvContent, fileName);
-
-        // Ask the user if they want to download the rejected contacts file
-        if (data.exportId) {
-          const downloadRejected = window.confirm(
-            'Deseja baixar o arquivo com os contatos que precisam ser normalizados (rejeitados)?'
-          );
-          if (downloadRejected) {
-            setLogs((prevLogs) => [...prevLogs, 'Iniciando download do arquivo de contatos a normalizar...']);
-            window.location.href = `/api/download-rejected?id=${data.exportId}`;
-          }
-        }
-
-        setIsLoading(false);
-        eventSource.close();
-      } else if (data.type === 'error') {
-        setError(data.message);
-        setIsLoading(false);
-        eventSource.close();
+      if (!response.ok) {
+        throw new Error(data.message || `O servidor respondeu com o status ${response.status}`);
       }
-    };
 
-    eventSource.onerror = () => {
-      setError('Falha na conexão de streaming com o servidor.');
+      const { csvContent, logContent, fileName } = data;
+
+      // Iniciar o download do CSV
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      // Exibir os logs na tela
+      setLastRunLogs(logContent);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
+    } finally {
       setIsLoading(false);
-      eventSource.close();
-    };
-  };
-
-  const downloadCsv = (csvContent: string, fileName: string) => {
-    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-  };
-
-  useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs]);
+  };
 
-  const anyExportRunning = isProductsLoading || isCompaniesLoading || isContactsLoading || isDealsLoading;
+  const isModeImplemented = mode === 'sold' && selectedEntity === 'companies';
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
-      <h1>Migração Spotter para HubSpot</h1>
+      <h1>Migração Spotter → HubSpot</h1>
+      <p>Exporte dados do Spotter para arquivos CSV prontos para importação no HubSpot.</p>
 
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-        <div>
-          <p>Clique para exportar os produtos do Spotter para um CSV.</p>
-          <button
-            onClick={() => startExport('products')}
-            disabled={anyExportRunning}
-            style={{
-              padding: '10px 20px',
-              fontSize: '16px',
-              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
-              backgroundColor: isProductsLoading ? '#ccc' : '#007bff',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-            }}
+      <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '1.5rem', backgroundColor: '#f9f9f9' }}>
+
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label htmlFor="import-mode" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            1. Escolha o Modo de Exportação
+          </label>
+          <select
+            id="import-mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as ExportMode)}
+            disabled={isLoading}
+            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
           >
-            {isProductsLoading ? 'Exportando Produtos...' : 'Exportar Produtos (CSV)'}
-          </button>
+            {Object.entries(modeConfig).map(([key, config]) => (
+              <option key={key} value={key}>{config.label}</option>
+            ))}
+          </select>
         </div>
 
-        <div>
-          <p>Clique para exportar as empresas do Spotter para um CSV.</p>
-          <button
-            onClick={() => startExport('companies')}
-            disabled={anyExportRunning}
-            style={{
-              padding: '10px 20px',
-              fontSize: '16px',
-              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
-              backgroundColor: isCompaniesLoading ? '#ccc' : '#28a745',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-            }}
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label htmlFor="entity-select" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+            2. Escolha o Arquivo para Gerar
+          </label>
+           <select
+            id="entity-select"
+            value={selectedEntity}
+            onChange={(e) => setSelectedEntity(e.target.value as ExportableEntity)}
+            disabled={isLoading || mode !== 'sold'}
+            style={{ width: '100%', padding: '10px', fontSize: '16px', borderRadius: '5px', border: '1px solid #ccc' }}
           >
-            {isCompaniesLoading ? 'Exportando Empresas...' : 'Exportar Empresas (CSV)'}
-          </button>
+            {modeConfig[mode].entities.map(entity => (
+              <option key={entity} value={entity}>{entityConfig[entity].label}</option>
+            ))}
+          </select>
         </div>
 
-        <div>
-          <p>Clique para exportar os contatos do Spotter para um CSV.</p>
-          <button
-            onClick={() => startExport('contacts')}
-            disabled={anyExportRunning}
-            style={{
-              padding: '10px 20px',
-              fontSize: '16px',
-              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
-              backgroundColor: isContactsLoading ? '#ccc' : '#17a2b8',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-            }}
-          >
-            {isContactsLoading ? 'Exportando Contatos...' : 'Exportar Contatos (CSV)'}
-          </button>
-        </div>
-
-        <div>
-          <p>Exporta Negócios (Deals) e seus Itens de Linha (Line Items).</p>
-          <button
-            onClick={() => startExport('deals')}
-            disabled={anyExportRunning}
-            style={{
-              padding: '10px 20px',
-              fontSize: '16px',
-              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
-              backgroundColor: isDealsLoading ? '#ccc' : '#fd7e14',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-            }}
-          >
-            {isDealsLoading ? 'Exportando Negócios...' : 'Exportar Negócios + Itens de Linha (CSV)'}
-          </button>
-        </div>
+        <button
+          onClick={startExport}
+          disabled={isLoading || !isModeImplemented}
+          style={{
+            width: '100%',
+            padding: '12px 20px',
+            fontSize: '18px',
+            cursor: (isLoading || !isModeImplemented) ? 'not-allowed' : 'pointer',
+            backgroundColor: (isLoading || !isModeImplemented) ? '#ccc' : '#28a745',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            fontWeight: 'bold'
+          }}
+        >
+          {isLoading ? 'Exportando...' : 'Gerar e Baixar CSV'}
+        </button>
       </div>
 
-      {(logs.length > 0 || anyExportRunning) && (
-        <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#f9f9f9' }}>
-          <h2>Logs da Execução</h2>
-          <pre ref={logContainerRef} style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '400px', overflowY: 'auto', margin: 0, fontFamily: 'monospace', fontSize: '14px' }}>
-            {logs.join('\n')}
-          </pre>
+      {error && (
+        <div style={{ color: 'red', marginTop: '1.5rem', border: '1px solid red', padding: '1rem', borderRadius: '5px', backgroundColor: '#ffebee' }}>
+          <strong>Erro:</strong> {error}
         </div>
       )}
 
-      {error && <p style={{ color: 'red', marginTop: '1rem' }}><strong>Erro:</strong> {error}</p>}
+      {lastRunLogs && (
+        <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#fff' }}>
+          <h2>Logs da Última Execução</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '400px', overflowY: 'auto', margin: 0, fontFamily: 'monospace', fontSize: '14px', backgroundColor: '#f5f5f5', padding: '1rem', borderRadius: '5px' }}>
+            {lastRunLogs}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
