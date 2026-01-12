@@ -5,17 +5,36 @@ import React, { useState, useRef, useEffect } from 'react';
 export default function HomePage() {
   const [isProductsLoading, setIsProductsLoading] = useState(false);
   const [isCompaniesLoading, setIsCompaniesLoading] = useState(false);
+  const [isContactsLoading, setIsContactsLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLPreElement>(null);
 
-  const startExport = (entity: 'products' | 'companies') => {
-    const isLoading = entity === 'products' ? isProductsLoading : isCompaniesLoading;
-    if (isLoading) return;
+  const startExport = (entity: 'products' | 'companies' | 'contacts') => {
+    let isLoading, setIsLoading, apiUrl, fileName;
 
-    const setIsLoading = entity === 'products' ? setIsProductsLoading : setIsCompaniesLoading;
-    const apiUrl = entity === 'products' ? '/api/export-products' : '/api/export-companies';
-    const fileName = entity === 'products' ? 'products_hubspot.csv' : 'spotter_to_hubspot_empresas.csv';
+    switch (entity) {
+      case 'products':
+        isLoading = isProductsLoading;
+        setIsLoading = setIsProductsLoading;
+        apiUrl = '/api/export-products';
+        fileName = 'products_hubspot.csv';
+        break;
+      case 'companies':
+        isLoading = isCompaniesLoading;
+        setIsLoading = setIsCompaniesLoading;
+        apiUrl = '/api/export-companies';
+        fileName = 'spotter_to_hubspot_empresas.csv';
+        break;
+      case 'contacts':
+        isLoading = isContactsLoading;
+        setIsLoading = setIsContactsLoading;
+        apiUrl = '/api/export-contacts';
+        fileName = 'spotter_to_hubspot_contatos.csv';
+        break;
+    }
+
+    if (isLoading) return;
 
     setIsLoading(true);
     setError(null);
@@ -34,8 +53,20 @@ export default function HomePage() {
       if (data.type === 'log') {
         setLogs((prevLogs) => [...prevLogs, data.message]);
       } else if (data.type === 'done') {
-        setLogs((prevLogs) => [...prevLogs, 'Exportação concluída. Download iniciado...']);
+        setLogs((prevLogs) => [...prevLogs, 'Exportação principal concluída. Iniciando download...']);
         downloadCsv(data.csvContent, fileName);
+
+        // Ask the user if they want to download the rejected contacts file
+        if (data.exportId) {
+          const downloadRejected = window.confirm(
+            'Deseja baixar o arquivo com os contatos que precisam ser normalizados (rejeitados)?'
+          );
+          if (downloadRejected) {
+            setLogs((prevLogs) => [...prevLogs, 'Iniciando download do arquivo de contatos a normalizar...']);
+            window.location.href = `/api/download-rejected?id=${data.exportId}`;
+          }
+        }
+
         setIsLoading(false);
         eventSource.close();
       } else if (data.type === 'error') {
@@ -70,7 +101,7 @@ export default function HomePage() {
     }
   }, [logs]);
 
-  const anyExportRunning = isProductsLoading || isCompaniesLoading;
+  const anyExportRunning = isProductsLoading || isCompaniesLoading || isContactsLoading;
 
   return (
     <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
@@ -112,6 +143,25 @@ export default function HomePage() {
             }}
           >
             {isCompaniesLoading ? 'Exportando Empresas...' : 'Exportar Empresas (CSV)'}
+          </button>
+        </div>
+
+        <div>
+          <p>Clique para exportar os contatos do Spotter para um CSV.</p>
+          <button
+            onClick={() => startExport('contacts')}
+            disabled={anyExportRunning}
+            style={{
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
+              backgroundColor: isContactsLoading ? '#ccc' : '#17a2b8',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+            }}
+          >
+            {isContactsLoading ? 'Exportando Contatos...' : 'Exportar Contatos (CSV)'}
           </button>
         </div>
       </div>
