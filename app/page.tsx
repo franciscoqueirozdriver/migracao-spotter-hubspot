@@ -3,20 +3,29 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 export default function HomePage() {
-  const [isLoading, setIsLoading] = useState(false);
+  const [isProductsLoading, setIsProductsLoading] = useState(false);
+  const [isCompaniesLoading, setIsCompaniesLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLPreElement>(null);
 
-  const handleExport = () => {
+  const startExport = (entity: 'products' | 'companies') => {
+    const isLoading = entity === 'products' ? isProductsLoading : isCompaniesLoading;
+    if (isLoading) return;
+
+    const setIsLoading = entity === 'products' ? setIsProductsLoading : setIsCompaniesLoading;
+    const apiUrl = entity === 'products' ? '/api/export-products' : '/api/export-companies';
+    const fileName = entity === 'products' ? 'products_hubspot.csv' : 'spotter_to_hubspot_empresas.csv';
+
     setIsLoading(true);
     setError(null);
-    setLogs([]);
+    setLogs([]); // Clear logs for new export
 
-    const eventSource = new EventSource('/api/export-products');
+    const eventSource = new EventSource(apiUrl);
 
     eventSource.onopen = () => {
-      console.log('Conexão de streaming aberta.');
+      console.log(`Conexão de streaming aberta para ${entity}.`);
+      setLogs((prevLogs) => [...prevLogs, `Iniciando exportação de ${entity}...`]);
     };
 
     eventSource.onmessage = (event) => {
@@ -25,8 +34,8 @@ export default function HomePage() {
       if (data.type === 'log') {
         setLogs((prevLogs) => [...prevLogs, data.message]);
       } else if (data.type === 'done') {
-        setLogs((prevLogs) => [...prevLogs, 'Download iniciado...']);
-        downloadCsv(data.csvContent);
+        setLogs((prevLogs) => [...prevLogs, 'Exportação concluída. Download iniciado...']);
+        downloadCsv(data.csvContent, fileName);
         setIsLoading(false);
         eventSource.close();
       } else if (data.type === 'error') {
@@ -43,12 +52,12 @@ export default function HomePage() {
     };
   };
 
-  const downloadCsv = (csvContent: string) => {
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const downloadCsv = (csvContent: string, fileName: string) => {
+    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'products_hubspot.csv';
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -61,39 +70,62 @@ export default function HomePage() {
     }
   }, [logs]);
 
-  return (
-    <div style={{ fontFamily: 'sans-serif', padding: '2rem' }}>
-      <h1>Migração Spotter para HubSpot</h1>
-      <p>
-        Clique no botão abaixo para exportar os produtos do Spotter e gerar um
-        arquivo CSV pronto para importação no HubSpot.
-      </p>
-      <button
-        onClick={handleExport}
-        disabled={isLoading}
-        style={{
-          padding: '10px 20px',
-          fontSize: '16px',
-          cursor: isLoading ? 'not-allowed' : 'pointer',
-          backgroundColor: isLoading ? '#ccc' : '#007bff',
-          color: 'white',
-          border: 'none',
-          borderRadius: '5px',
-        }}
-      >
-        {isLoading ? 'Exportando...' : 'Exportar Produtos para CSV'}
-      </button>
+  const anyExportRunning = isProductsLoading || isCompaniesLoading;
 
-      {logs.length > 0 && (
+  return (
+    <div style={{ fontFamily: 'sans-serif', padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
+      <h1>Migração Spotter para HubSpot</h1>
+
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <p>Clique para exportar os produtos do Spotter para um CSV.</p>
+          <button
+            onClick={() => startExport('products')}
+            disabled={anyExportRunning}
+            style={{
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
+              backgroundColor: isProductsLoading ? '#ccc' : '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+            }}
+          >
+            {isProductsLoading ? 'Exportando Produtos...' : 'Exportar Produtos (CSV)'}
+          </button>
+        </div>
+
+        <div>
+          <p>Clique para exportar as empresas do Spotter para um CSV.</p>
+          <button
+            onClick={() => startExport('companies')}
+            disabled={anyExportRunning}
+            style={{
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: anyExportRunning ? 'not-allowed' : 'pointer',
+              backgroundColor: isCompaniesLoading ? '#ccc' : '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+            }}
+          >
+            {isCompaniesLoading ? 'Exportando Empresas...' : 'Exportar Empresas (CSV)'}
+          </button>
+        </div>
+      </div>
+
+      {(logs.length > 0 || anyExportRunning) && (
         <div style={{ marginTop: '1.5rem', border: '1px solid #ccc', padding: '1rem', borderRadius: '5px', backgroundColor: '#f9f9f9' }}>
           <h2>Logs da Execução</h2>
-          <pre ref={logContainerRef} style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '300px', overflowY: 'auto', margin: 0, fontFamily: 'monospace' }}>
+          <pre ref={logContainerRef} style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', maxHeight: '400px', overflowY: 'auto', margin: 0, fontFamily: 'monospace', fontSize: '14px' }}>
             {logs.join('\n')}
           </pre>
         </div>
       )}
 
-      {error && <p style={{ color: 'red', marginTop: '1rem' }}>Erro: {error}</p>}
+      {error && <p style={{ color: 'red', marginTop: '1rem' }}><strong>Erro:</strong> {error}</p>}
     </div>
   );
 }
