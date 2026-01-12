@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 
-type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items';
+type ExportableEntity = 'companies' | 'contacts' | 'deals_line_items' | 'losts';
 
 export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -125,6 +125,14 @@ export default function HomePage() {
             style={{ ...buttonStyle(isLoading && activeExport !== 'deals_line_items'), backgroundColor: '#005bb5' }}
           >
             {activeExport === 'deals_line_items' ? 'Exportando...' : 'Exportar Negócios + Itens de Linha'}
+          </button>
+
+          <button
+            onClick={() => startExport('losts')}
+            disabled={isLoading}
+            style={{ ...buttonStyle(isLoading && activeExport !== 'losts'), backgroundColor: '#d93025' }}
+          >
+            {activeExport === 'losts' ? 'Exportando...' : 'Baixar Descartados (Losts)'}
           </button>
         </div>
         {isLoading && <p style={{ marginTop: '1rem', color: '#666' }}>Processando... Isso pode levar alguns minutos.</p>}

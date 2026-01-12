@@ -6,7 +6,7 @@ import { startRun, appendLog } from '@/lib/export/logStore';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items'];
+const validEntities: ExportableEntity[] = ['companies', 'contacts', 'deals_line_items', 'losts'];
 
 export async function GET(request: NextRequest) {
   const runId = startRun();
