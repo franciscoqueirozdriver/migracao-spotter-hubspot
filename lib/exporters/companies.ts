@@ -1,9 +1,9 @@
 
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
-import { LogCallback } from '../exporter';
+import { LogCallback, ExportLog } from '../exporter';
 
-// Redefine types if needed to avoid cross-project dependency issues with 'scripts' which might be excluded from build
+// Redefine types if needed to avoid cross-project dependency issues
 interface SpotterOrg {
     id: number;
     name: string;
@@ -38,12 +38,13 @@ function normalizeCnpj(value?: string | null): string {
     return value.replace(/\D/g, '');
 }
 
-export async function generateCompaniesCsvStrict(token: string, baseUrl: string, log: LogCallback): Promise<string> {
+export async function generateCompaniesCsvStrict(token: string, baseUrl: string, log: LogCallback, currentLog: ExportLog): Promise<string> {
   log('--- Starting Companies Export (empresas.csv) ---');
 
   const endpoint = '/v3/organization';
   const orgs = await paginateOData<SpotterOrg>(baseUrl, endpoint, token, log);
 
+  currentLog.totals.recordsFetched = orgs.length;
   log(` fetched ${orgs.length} organizations.`);
 
   // Prepare CSV
@@ -77,12 +78,7 @@ export async function generateCompaniesCsvStrict(token: string, baseUrl: string,
     String(org.id)
   ]);
 
-  // Use the writer that adds BOM
-  // generateCsvFromRows in 'lib/csv/writer.ts' likely doesn't add BOM by itself,
-  // but we can prepend it here or ensure the writer does.
-  // Looking at previous turn, I wrote 'lib/csv/writer.ts'. Let's check it.
-  // Wait, I created 'scripts/exporters/export-companies.ts' which manually added BOM.
-  // I should use the same logic here.
+  currentLog.totals.recordsGenerated = rows.length;
 
   const csvContent = generateCsvFromRows(headers, rows);
   return '\ufeff' + csvContent;

@@ -1,7 +1,7 @@
 
 import { paginateOData } from '../exactSpotter/paginate';
 import { generateCsvFromRows } from '../csv/writer';
-import { LogCallback } from '../exporter';
+import { LogCallback, ExportLog } from '../exporter';
 
 interface SpotterPerson {
     id: number;
@@ -24,12 +24,13 @@ function splitName(fullName?: string | null): { firstName: string, lastName: str
     return { firstName, lastName };
 }
 
-export async function generateContactsCsvStrict(token: string, baseUrl: string, log: LogCallback): Promise<string> {
+export async function generateContactsCsvStrict(token: string, baseUrl: string, log: LogCallback, currentLog: ExportLog): Promise<string> {
   log('--- Starting Contacts Export (contatos.csv) ---');
 
   const endpoint = '/v3/persons';
   const persons = await paginateOData<SpotterPerson>(baseUrl, endpoint, token, log);
 
+  currentLog.totals.recordsFetched = persons.length;
   log(` fetched ${persons.length} persons.`);
 
   // Prepare CSV
@@ -63,6 +64,8 @@ export async function generateContactsCsvStrict(token: string, baseUrl: string, 
         ''  // spotter_messaging_id
     ];
   });
+
+  currentLog.totals.recordsGenerated = rows.length;
 
   const csvContent = generateCsvFromRows(headers, rows);
   return '\ufeff' + csvContent;
